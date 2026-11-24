@@ -30,6 +30,7 @@ const (
 	MethodNodemgtControlResult  = "nodemgt.controlResult"
 	MethodNodemgtUsage          = "nodemgt.usage"
 	MethodNodemgtPresence       = "nodemgt.presence"
+	MethodNodemgtStats          = "nodemgt.stats"
 	MethodAgentFirewallSnapshot = "agent.firewall.snapshot"
 	MethodAgentFirewallApply    = "agent.firewall.apply"
 	MethodAgentFirewallAdopt    = "agent.firewall.adopt"

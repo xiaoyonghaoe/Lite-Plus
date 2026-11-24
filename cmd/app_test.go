@@ -191,60 +191,24 @@ func TestFirstRunInstallRedirect(t *testing.T) {
 	}
 }
 
-func TestMigrateAllowRemoteManagementUpgradeKeepsEnabled(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:migrate-remote-upgrade?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open config database: %v", err)
-	}
-	config.SetDb(db)
-	if err := config.Set(config.SitenameKey, "Existing Lite"); err != nil {
-		t.Fatalf("seed sitename: %v", err)
-	}
-	if err := migrateAllowRemoteManagement(); err != nil {
-		t.Fatalf("migrate upgrade: %v", err)
-	}
-	enabled, err := config.GetAs[bool](config.AllowRemoteManagementKey)
-	if err != nil || !enabled {
-		t.Fatalf("upgrade switch = %t, err %v; want true", enabled, err)
-	}
-}
-
-func TestMigrateAllowRemoteManagementNewInstallStaysOff(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:migrate-remote-new?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open config database: %v", err)
-	}
-	config.SetDb(db)
-	if err := migrateAllowRemoteManagement(); err != nil {
-		t.Fatalf("migrate new install: %v", err)
-	}
-	all, err := config.GetAll()
-	if err != nil {
-		t.Fatalf("get settings: %v", err)
-	}
-	if _, exists := all[config.AllowRemoteManagementKey]; exists {
-		t.Fatal("new install must not persist allow_remote_management; default stays off")
-	}
-}
-
-func TestMigrateAllowRemoteManagementPreservesExistingValue(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:migrate-remote-existing?mode=memory&cache=shared"), &gorm.Config{})
+func TestMigrateAllowRemoteManagementForcesDisabled(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:migrate-remote-disabled?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open config database: %v", err)
 	}
 	config.SetDb(db)
 	if err := config.SetMany(map[string]any{
 		config.SitenameKey:              "Existing Lite",
-		config.AllowRemoteManagementKey: false,
+		config.AllowRemoteManagementKey: true,
 	}); err != nil {
 		t.Fatalf("seed existing switch: %v", err)
 	}
 	if err := migrateAllowRemoteManagement(); err != nil {
-		t.Fatalf("migrate existing: %v", err)
+		t.Fatalf("migrate remote management: %v", err)
 	}
 	enabled, err := config.GetAs[bool](config.AllowRemoteManagementKey)
 	if err != nil || enabled {
-		t.Fatalf("existing closed switch overwritten: %t, err %v", enabled, err)
+		t.Fatalf("allow_remote_management = %t, err %v; want false", enabled, err)
 	}
 }
 

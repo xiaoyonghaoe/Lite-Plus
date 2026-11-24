@@ -218,6 +218,8 @@ func GetClients(c *gin.Context) {
 	isLogin := false
 	if _, err = accounts.GetUserBySession(session); err == nil {
 		isLogin = true
+		agent_runtime.DashboardAdminConnected()
+		defer agent_runtime.DashboardAdminDisconnected()
 	}
 	group := strings.TrimSpace(c.Query("group"))
 
@@ -226,6 +228,9 @@ func GetClients(c *gin.Context) {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			return
+		}
+		if isLogin {
+			agent_runtime.TouchAdminActivity()
 		}
 		message := string(data)
 

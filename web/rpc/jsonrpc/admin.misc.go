@@ -22,14 +22,9 @@ import (
 	"github.com/nuomiiiii/lite/pkg/metric"
 	"github.com/nuomiiiii/lite/pkg/rpc"
 	"github.com/nuomiiiii/lite/pkg/themehttp"
-	v2 "github.com/nuomiiiii/lite/protocol/v2"
 	logger "github.com/nuomiiiii/lite/utils/log"
 	"github.com/nuomiiiii/lite/utils/messageSender"
-	agent "github.com/nuomiiiii/lite/web/agent"
-	"github.com/nuomiiiii/lite/web/mcp"
 	"github.com/nuomiiiii/lite/web/passkey"
-	"github.com/nuomiiiii/lite/web/remotectl"
-	"github.com/nuomiiiii/lite/web/scheduledexec"
 )
 
 // admin.misc.go
@@ -109,7 +104,6 @@ func adminDeleteSession(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if err := accounts.DeleteSession(params.Session); err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, "Failed to delete session: "+err.Error(), nil)
 	}
-	remotectl.RevokeLogin(params.Session)
 	actor, ip := auditActor(ctx)
 	auditlog.Event(ip, actor, "info", "audit.session_delete", nil)
 	return nil, nil
@@ -122,7 +116,6 @@ func adminDeleteAllSessions(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *r
 	if err := accounts.DeleteAllSessions(); err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, "Failed to delete all sessions: "+err.Error(), nil)
 	}
-	remotectl.RevokeAll()
 	actor, ip := auditActor(ctx)
 	auditlog.Event(ip, actor, "warn", "audit.session_delete_all", nil)
 	return nil, nil
@@ -137,6 +130,8 @@ func adminGetSettings(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.Jso
 		return nil, rpc.MakeError(rpc.InternalError, "Failed to get settings: "+err.Error(), nil)
 	}
 	stripRetiredAdminSettings(cst)
+	cst[config.AllowRemoteManagementKey] = false
+	cst[config.AllowMCPKey] = false
 	if meta := rpc.MetaFromContext(ctx); meta != nil && meta.Principal != nil && (meta.Principal.IsAPIKey || meta.Principal.Type == rpc.PrincipalAPIKey) {
 		cst[config.ApiKeyKey] = ""
 	}
@@ -254,9 +249,8 @@ func adminEditSettings(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	delete(cfg, config.ReduceMotionKey)
 	delete(cfg, metricstore.MetricDownsamplingEnabledKey)
 	delete(cfg, config.AutoDiscoveryKeyKey)
-
-	previousRemote, _ := config.GetAs[bool](config.AllowRemoteManagementKey, false)
-	previousMCP, _ := config.GetAs[bool](config.AllowMCPKey, false)
+	delete(cfg, config.AllowRemoteManagementKey)
+	delete(cfg, config.AllowMCPKey)
 
 	touchedMetric := metricKeysTouched(cfg)
 	if touchedMetric {
@@ -316,34 +310,6 @@ func adminEditSettings(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 				return nil, rpc.MakeError(rpc.InternalError, "Failed to refresh current session: "+err.Error(), nil)
 			}
 		}
-	}
-	if raw, ok := cfg[config.AllowRemoteManagementKey]; ok && previousRemote && !toBool(raw, false) {
-		removed := agent.DrainRemoteDelivery(func() []agent.RemovedV2Event {
-			remotectl.RevokeAll()
-			return agent.RemoveAllV2EventsByMethods(
-				v2.MethodAgentRemote,
-				v2.MethodAgentExec,
-				v2.MethodAgentMCPExec,
-				v2.MethodAgentMCPFile,
-				v2.MethodAgentMCPCancel,
-				v2.MethodAgentMCPRenew,
-				v2.MethodAgentMCPRevoke,
-			)
-		})
-		cancelErr := cancelUndeliveredRemoteExec(removed)
-		stopErr := scheduledexec.StopForRemoteOff()
-		if cancelErr != nil && stopErr != nil {
-			return nil, rpc.MakeError(rpc.InternalError, "远程管理已关闭，但未能写入已取消任务结果: "+cancelErr.Error()+"；未能停用定时任务: "+stopErr.Error(), nil)
-		}
-		if cancelErr != nil {
-			return nil, rpc.MakeError(rpc.InternalError, "远程管理已关闭，但未能写入已取消任务结果: "+cancelErr.Error(), nil)
-		}
-		if stopErr != nil {
-			return nil, rpc.MakeError(rpc.InternalError, "远程管理已关闭，但未能停用定时任务: "+stopErr.Error(), nil)
-		}
-	}
-	if raw, ok := cfg[config.AllowMCPKey]; ok && previousMCP && !toBool(raw, false) {
-		mcp.DrainMCPDelivery()
 	}
 	// 配置已落库，热重载 metric store（无需重启）。连接已在上面验证过，
 	// 这里再次失败属异常情况，回报给用户。
@@ -514,41 +480,6 @@ func toInt(v any, fallback int) int {
 		}
 	}
 	return fallback
-}
-
-var cancelUndeliveredTaskResult = tasks.CancelUndeliveredTaskResult
-
-func cancelUndeliveredRemoteExec(removed []agent.RemovedV2Event) error {
-	var errs []error
-	for _, item := range removed {
-		if item.Event.Method != v2.MethodAgentExec {
-			continue
-		}
-		if item.Event.HandedOff {
-			continue
-		}
-		taskID := agent.ExecTaskID(item.Event)
-		if taskID == "" {
-			continue
-		}
-		if err := cancelUndeliveredTaskResult(taskID, item.UUID, v2.RemoteManagementClosedTaskResult); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func cancelExecTaskClients(taskID string, clients []string) error {
-	var errs []error
-	for _, uuid := range clients {
-		if uuid == "" {
-			continue
-		}
-		if err := cancelUndeliveredTaskResult(taskID, uuid, v2.RemoteManagementClosedTaskResult); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 func adminClearAllRecords(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {

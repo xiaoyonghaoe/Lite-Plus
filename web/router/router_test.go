@@ -155,16 +155,20 @@ func TestRegisterRemovesLegacyAgentAndTerminalRoutes(t *testing.T) {
 		"POST /api/clients/uploadBasicInfo",
 		"GET /api/clients/terminal",
 		"GET /api/admin/client/:uuid/terminal",
+		"GET /api/clients/v2/rpc",
+		"GET /api/clients/remote",
+		"POST /api/admin/client/remote/authorize",
+		"POST /api/admin/client/remote/revoke",
+		"POST /api/admin/task/exec",
+		"GET /api/admin/scheduled-exec",
+		"POST /api/admin/firewall/:uuid/install",
 	} {
 		if routes[route] {
 			t.Fatalf("removed route is still registered: %s", route)
 		}
 	}
-	if !routes["GET /api/clients/v2/rpc"] || !routes["POST /api/clients/v2/rpc"] || !routes["GET /api/clients/remote"] {
-		t.Fatal("current v2 and remote agent routes are missing")
-	}
-	if !routes["POST /api/admin/client/remote/authorize"] || !routes["POST /api/admin/client/remote/revoke"] {
-		t.Fatal("remote grant routes are missing")
+	if !routes["POST /api/clients/v2/rpc"] {
+		t.Fatal("current v2 HTTP agent route is missing")
 	}
 	if !routes["POST /api/admin/account/passkeys/confirm/options"] || !routes["GET /api/admin/oauth2/confirm-passkey"] {
 		t.Fatal("passkey confirmation routes are missing")

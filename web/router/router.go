@@ -2,16 +2,14 @@ package router
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/nuomiiiii/lite/nodemgt/subhttp"
 	"github.com/nuomiiiii/lite/web/api"
 	"github.com/nuomiiiii/lite/web/api/admin"
 	"github.com/nuomiiiii/lite/web/api/client"
 	public_api "github.com/nuomiiiii/lite/web/api/public"
-	"github.com/nuomiiiii/lite/web/api/remote"
 	installweb "github.com/nuomiiiii/lite/web/install"
-	"github.com/nuomiiiii/lite/web/mcp"
 	"github.com/nuomiiiii/lite/web/public"
 	jsonRpc "github.com/nuomiiiii/lite/web/rpc/jsonrpc"
-	"github.com/nuomiiiii/lite/nodemgt/subhttp"
 )
 
 // Register binds all HTTP, WebSocket, JSON-RPC and static frontend routes.
@@ -25,7 +23,6 @@ func Register(r *gin.Engine) {
 	})
 
 	registerPublicRoutes(r)
-	mcp.RegisterPublic(r)
 	registerAgentRoutes(r)
 	registerAdminRoutes(r)
 
@@ -67,13 +64,11 @@ func registerPublicRoutes(r *gin.Engine) {
 	r.POST("/api/rpc2", jsonRpc.OnRpcRequest)
 }
 
-// registerAgentRoutes agent（客户端）上报与拉取路由。
+// registerAgentRoutes agent（客户端）上报与捎带拉取路由（纯 HTTP Keep-Alive）。
 func registerAgentRoutes(r *gin.Engine) {
 	agentOnly := r.Group("/api/clients", api.RequireRole(api.RoleClient))
 	{
-		agentOnly.GET("/v2/rpc", client.WebSocketV2RPC)
 		agentOnly.POST("/v2/rpc", client.UploadV2RPC)
-		agentOnly.GET("/remote", remote.EstablishAgent)
 	}
 }
 
@@ -171,21 +166,10 @@ func registerAdminRoutes(r *gin.Engine) {
 
 	// --- 以下全部 JSON -> RPC2 ---
 
-	// tasks（远程执行）
-	task := g.Group("/task")
-	{
-		task.GET("/all", jsonRpc.Bind("admin:getTasks"))
-		task.POST("/exec", jsonRpc.Bind("admin:exec"))
-		task.GET("/:task_id", jsonRpc.Bind("admin:getTaskById", jsonRpc.WithPath("task_id")))
-		task.GET("/:task_id/result", jsonRpc.Bind("admin:getTaskResultsByTaskId", jsonRpc.WithPath("task_id")))
-		task.GET("/:task_id/result/:uuid", jsonRpc.Bind("admin:getSpecificTaskResult", jsonRpc.WithPath("task_id", "uuid")))
-		task.GET("/client/:uuid", jsonRpc.Bind("admin:getTasksByClientId", jsonRpc.WithPath("uuid")))
-	}
 	g.GET("/firewall/:uuid", jsonRpc.Bind("admin:getFirewall", jsonRpc.WithPath("uuid")))
 	g.PUT("/firewall/:uuid", jsonRpc.Bind("admin:saveFirewall", jsonRpc.WithPath("uuid")))
 	g.POST("/firewall/:uuid/snapshot", jsonRpc.Bind("admin:snapshotFirewall", jsonRpc.WithPath("uuid")))
 	g.POST("/firewall/:uuid/adopt", jsonRpc.Bind("admin:adoptFirewall", jsonRpc.WithPath("uuid")))
-	g.POST("/firewall/:uuid/install", jsonRpc.Bind("admin:installFirewall", jsonRpc.WithPath("uuid")))
 	g.GET("/protection/:uuid", jsonRpc.Bind("admin:getProtection", jsonRpc.WithPath("uuid")))
 	g.PUT("/protection/:uuid", jsonRpc.Bind("admin:saveProtection", jsonRpc.WithPath("uuid")))
 	g.POST("/protection/:uuid/precheck", jsonRpc.Bind("admin:precheckProtection", jsonRpc.WithPath("uuid")))
@@ -195,22 +179,12 @@ func registerAdminRoutes(r *gin.Engine) {
 	g.GET("/protection-groups", jsonRpc.Bind("admin:listProtectionGroups"))
 	g.POST("/protection-groups", jsonRpc.Bind("admin:saveProtectionGroup"))
 	g.DELETE("/protection-groups/:id", jsonRpc.Bind("admin:deleteProtectionGroup", jsonRpc.WithPath("id")))
-	g.GET("/scheduled-exec", jsonRpc.Bind("admin:listScheduledExec"))
-	g.POST("/scheduled-exec", jsonRpc.Bind("admin:createScheduledExec"))
-	g.POST("/scheduled-exec/order", jsonRpc.Bind("admin:reorderScheduledExec"))
-	g.PUT("/scheduled-exec/:id", jsonRpc.Bind("admin:updateScheduledExec", jsonRpc.WithPath("id")))
-	g.DELETE("/scheduled-exec/:id", jsonRpc.Bind("admin:deleteScheduledExec", jsonRpc.WithPath("id")))
-	g.POST("/scheduled-exec/:id/enabled", jsonRpc.Bind("admin:setScheduledExecEnabled", jsonRpc.WithPath("id")))
-	g.POST("/scheduled-exec/:id/run", jsonRpc.Bind("admin:runScheduledExec", jsonRpc.WithPath("id")))
-	g.GET("/scheduled-exec/:id/runs", jsonRpc.Bind("admin:listScheduledExecRuns", jsonRpc.WithPath("id")))
 
 	// settings
 	settings := g.Group("/settings")
 	{
 		settings.GET("/", jsonRpc.Bind("admin:getSettings"))
 		settings.POST("/", jsonRpc.Bind("admin:editSettings"))
-		settings.GET("/xtermjs", jsonRpc.Bind("admin:getXtermjsSettings"))
-		settings.POST("/xtermjs", jsonRpc.Bind("admin:setXtermjsSettings", jsonRpc.WithMessage("settings saved")))
 		settings.GET("/dashboard", jsonRpc.Bind("admin:getDashboardSettings"))
 		settings.POST("/dashboard", jsonRpc.Bind("admin:setDashboardSettings", jsonRpc.WithMessage("settings saved")))
 		settings.POST("/oidc", jsonRpc.Bind("admin:setOidcProvider"))
@@ -233,11 +207,6 @@ func registerAdminRoutes(r *gin.Engine) {
 	// clients
 	clientGroup := g.Group("/client")
 	{
-		clientGroup.POST("/remote/authorize", remote.Authorize)
-		clientGroup.POST("/remote/session", remote.CreateSession)
-		clientGroup.POST("/remote/session/cancel", remote.CancelSession)
-		clientGroup.POST("/remote/revoke", remote.RevokeGrant)
-		clientGroup.GET("/remote", remote.ConnectBrowser)
 		clientGroup.POST("/add", jsonRpc.Bind("admin:addClient", jsonRpc.WithFlat()))
 		clientGroup.GET("/list", jsonRpc.Bind("admin:listClients", jsonRpc.WithRaw()))
 		clientGroup.GET("/:uuid", jsonRpc.Bind("admin:getClient", jsonRpc.WithPath("uuid"), jsonRpc.WithRaw()))
@@ -273,19 +242,6 @@ func registerAdminRoutes(r *gin.Engine) {
 	}
 
 	g.GET("/logs", jsonRpc.Bind("admin:getLogs", jsonRpc.WithQuery("limit", "page", "q", "msg_type", "day")))
-
-	mcp.RegisterAdmin(g)
-
-	// clipboard
-	clipboardGroup := g.Group("/clipboard")
-	{
-		clipboardGroup.GET("/:id", jsonRpc.Bind("admin:getClipboard", jsonRpc.WithPath("id")))
-		clipboardGroup.GET("", jsonRpc.Bind("admin:listClipboard"))
-		clipboardGroup.POST("", jsonRpc.Bind("admin:createClipboard"))
-		clipboardGroup.POST("/:id", jsonRpc.Bind("admin:updateClipboard", jsonRpc.WithPath("id")))
-		clipboardGroup.POST("/remove", jsonRpc.Bind("admin:batchDeleteClipboard"))
-		clipboardGroup.POST("/:id/remove", jsonRpc.Bind("admin:deleteClipboard", jsonRpc.WithPath("id")))
-	}
 
 	// notifications
 	notificationGroup := g.Group("/notification")

@@ -321,6 +321,8 @@ type inboundUpsertParams struct {
 	ExcludeFromSub     *bool                     `json:"exclude_from_sub"`
 	ShareStrategy      string                    `json:"share_strategy"`
 	FirewallAllow      *bool                     `json:"firewall_allow"`
+	FirewallAllowNodes []string                  `json:"firewall_allow_nodes"`
+	VirtualTags        []string                  `json:"virtual_tags"`
 	Grant              string                    `json:"grant"`
 	PageID             string                    `json:"page_id"`
 }
@@ -577,6 +579,29 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 		}
 		cfg.SSPassword = key
 	}
+	if p.FirewallAllowNodes != nil {
+		seen := map[string]struct{}{}
+		cleaned := make([]string, 0, len(p.FirewallAllowNodes))
+		for _, id := range p.FirewallAllowNodes {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			cleaned = append(cleaned, id)
+		}
+		cfg.FirewallAllowNodes = cleaned
+	} else if len(oldCfg.FirewallAllowNodes) > 0 && p.FirewallAllow == nil {
+		cfg.FirewallAllowNodes = oldCfg.FirewallAllowNodes
+	}
+	if p.VirtualTags != nil {
+		cfg.VirtualTags = inboundcfg.NormalizeVirtualTags(p.VirtualTags)
+	} else if len(oldCfg.VirtualTags) > 0 {
+		cfg.VirtualTags = inboundcfg.NormalizeVirtualTags(oldCfg.VirtualTags)
+	}
 	enabled := true
 	if p.Enabled != nil {
 		enabled = *p.Enabled
@@ -603,26 +628,12 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 			}
 		}
 	}
-	var expires time.Time
-	var grantEpoch uint64
-	var grantMeta *rpc.ContextMeta
 	if op != firewall.InboundFirewallNone {
 		_, clientErr := clients.GetClientByUUID(row.NodeUUID)
 		nodePresent := clientErr == nil
 		if op == firewall.InboundFirewallLink && enabled && nodePresent {
 			if err := firewall.EnsureApplyAllowed(row.NodeUUID); err != nil {
 				return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-			}
-		}
-		if nodePresent {
-			meta, rpcErr := scheduledExecActor(ctx)
-			if rpcErr != nil {
-				return nil, rpcErr
-			}
-			grantMeta = meta
-			expires, grantEpoch, rpcErr = consumeScheduledExecGrant(meta, p.Grant, p.PageID)
-			if rpcErr != nil {
-				return nil, rpcErr
 			}
 		}
 	}
@@ -645,11 +656,7 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 		return nil, nodemgtErr(syncErr)
 	}
 	nodemgtPushNodes(st, append([]string{row.NodeUUID}, chainNodes...)...)
-	view := inboundView(row)
-	if grantMeta != nil {
-		return grantPayload(grantMeta.Principal.UserUUID, grantMeta.SessionToken, p.PageID, expires, grantEpoch, view), nil
-	}
-	return view, nil
+	return inboundView(row), nil
 }
 
 func inboundView(row models.Inbound) map[string]any {
@@ -711,6 +718,8 @@ func inboundViewWithLinked(row models.Inbound, fwLinked bool) map[string]any {
 		"exclude_from_sub":     s.ExcludeFromSub,
 		"share_strategy":       s.ShareStrategy,
 		"firewall_linked":      fwLinked,
+		"firewall_allow_nodes": s.FirewallAllowNodes,
+		"virtual_tags":         inboundcfg.NormalizeVirtualTags(s.VirtualTags),
 	}
 	if strings.EqualFold(row.Protocol, "shadowsocks") {
 		view["ss_network"] = inboundcfg.EffectiveSSNetwork(s)
@@ -736,27 +745,9 @@ func nodemgtInboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	var expires time.Time
-	var grantEpoch uint64
-	var grantMeta *rpc.ContextMeta
 	if firewall.InboundLinked(row.NodeUUID, row.ID) {
-		if _, err := clients.GetClientByUUID(row.NodeUUID); err != nil {
-			if err := firewall.UnlinkInbound(row.NodeUUID, row.ID); err != nil {
-				return nil, nodemgtErr(err)
-			}
-		} else {
-			meta, rpcErr := scheduledExecActor(ctx)
-			if rpcErr != nil {
-				return nil, rpcErr
-			}
-			grantMeta = meta
-			expires, grantEpoch, rpcErr = consumeScheduledExecGrant(meta, p.Grant, p.PageID)
-			if rpcErr != nil {
-				return nil, rpcErr
-			}
-			if err := firewall.UnlinkInbound(row.NodeUUID, row.ID); err != nil {
-				return nil, nodemgtErr(err)
-			}
+		if err := firewall.UnlinkInbound(row.NodeUUID, row.ID); err != nil {
+			return nil, nodemgtErr(err)
 		}
 	}
 	chainNodes, err := st.DetachInboundChains(p.ID)
@@ -768,11 +759,7 @@ func nodemgtInboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	}
 	_ = nodemgtAudit(ctx, st, "nodemgt.inbound.delete", p.ID, row.Name)
 	nodemgtPushNodes(st, append([]string{row.NodeUUID}, chainNodes...)...)
-	out := map[string]any{"ok": true}
-	if grantMeta != nil {
-		return grantPayload(grantMeta.Principal.UserUUID, grantMeta.SessionToken, p.PageID, expires, grantEpoch, out), nil
-	}
-	return out, nil
+	return map[string]any{"ok": true}, nil
 }
 
 func nodemgtInboundReorder(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
@@ -1259,7 +1246,8 @@ func nodemgtUserUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 			for _, row := range in {
 				byID[row.ID] = row
 			}
-			if first, ok := byID[p.InboundIDs[0]]; ok {
+			baseFirstID, _ := inboundcfg.SplitVirtualInboundID(p.InboundIDs[0])
+			if first, ok := byID[baseFirstID]; ok {
 				p.NodeUUID = first.NodeUUID
 			}
 		}

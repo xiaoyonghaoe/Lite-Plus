@@ -10,16 +10,19 @@ import (
 	"github.com/nuomiiiii/lite/database/tasks"
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
 	agent_runtime "github.com/nuomiiiii/lite/web/agent"
-	"github.com/nuomiiiii/lite/web/mcp"
 )
 
 // ingest.go
 // agent 上报数据的传输无关处理逻辑。JSON-RPC 入口解析后统一调用这里落库并更新运行时状态。
 
-// ingestReport 保存一次负载上报并刷新运行时状态。
-// 节点身份只能来自已认证的 Token（调用方传入的 uuid），不能信任上报正文中的 UUID。
-// markPresence 为 true 时按 POST 上报会话刷新在线状态（WS 连接自行管理在线状态，应传 false）。
+// ingestReport 保存一次负载上报并按默认 TTL 刷新运行时状态。
 func ingestReport(uuid string, report v2.Report, markPresence bool) error {
+	return ingestReportWithTTL(uuid, report, markPresence, postPresenceTTL)
+}
+
+// ingestReportWithTTL 保存一次负载上报并按指定动态 TTL 刷新运行时状态。
+// 节点身份只能来自已认证的 Token（调用方传入的 uuid），不能信任上报正文中的 UUID。
+func ingestReportWithTTL(uuid string, report v2.Report, markPresence bool, presenceTTL time.Duration) error {
 	report.UUID = uuid
 	report.UpdatedAt = time.Now().UTC()
 	if err := clients.ReportVerify(report); err != nil {
@@ -31,7 +34,7 @@ func ingestReport(uuid string, report v2.Report, markPresence bool) error {
 	}
 	agent_runtime.RecordReport(savedReport)
 	if markPresence {
-		refreshPostPresence(uuid)
+		refreshPostPresenceWithTTL(uuid, presenceTTL)
 	}
 	return nil
 }
@@ -41,39 +44,8 @@ func ingestBasicInfo(uuid string, info map[string]interface{}, fallbackIP string
 	if info == nil {
 		info = map[string]interface{}{}
 	}
+	info["remote_control_enabled"] = false
 	return saveClientBasicInfo(info, uuid, fallbackIP)
-}
-
-func ingestMCPCapability(uuid string, params v2.PullParams) {
-	full := false
-	firewall := false
-	protection := false
-	for _, capability := range params.Capabilities {
-		if capability == v2.CapabilityMCPFull {
-			full = true
-		}
-		if capability == v2.CapabilityFirewall {
-			firewall = true
-		}
-		if capability == v2.CapabilityServiceProtection {
-			protection = true
-		}
-	}
-	version := 0
-	if full && params.CapabilityVersions != nil {
-		version = params.CapabilityVersions[v2.CapabilityMCPFull]
-	}
-	clients.SetMCPCapability(uuid, full, version)
-	fwVersion := 0
-	if firewall && params.CapabilityVersions != nil {
-		fwVersion = params.CapabilityVersions[v2.CapabilityFirewall]
-	}
-	clients.SetFirewallCapability(uuid, firewall, fwVersion)
-	protVersion := 0
-	if protection && params.CapabilityVersions != nil {
-		protVersion = params.CapabilityVersions[v2.CapabilityServiceProtection]
-	}
-	clients.SetProtectionCapability(uuid, protection, protVersion)
 }
 
 const pingResultLookback = 6 * time.Hour
@@ -102,20 +74,4 @@ func pingResultTimeAt(finishedAt, now time.Time) time.Time {
 		return now
 	}
 	return candidate
-}
-
-func ingestTaskResult(uuid string, params v2.TaskResultParams) error {
-	finishedAt := params.FinishedAt
-	if finishedAt.IsZero() {
-		finishedAt = time.Now().UTC()
-	}
-	completed := mcp.CompleteOperation(params.TaskID, uuid, params)
-	err := tasks.SaveIncomingTaskResult(params.TaskID, uuid, params.Result, params.Status, params.ExitCode, finishedAt)
-	if err == nil || completed {
-		// Drop the queued copy. Leaving it until the event TTL lets a later
-		// expiry write "delivery timeout" over the output the node just sent.
-		agent_runtime.RemoveV2EventsByTaskID(uuid, params.TaskID)
-		return nil
-	}
-	return err
 }

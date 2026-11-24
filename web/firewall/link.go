@@ -66,7 +66,54 @@ func inboundFirewallSpecChanged(prev, next nodemgtmodels.Inbound, nextCfg inboun
 	} else if !strings.EqualFold(strings.TrimSpace(prevCfg.Transport), strings.TrimSpace(nextCfg.Transport)) {
 		return true
 	}
+	if !sameStringSlice(prevCfg.FirewallAllowNodes, nextCfg.FirewallAllowNodes) {
+		return true
+	}
 	return false
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.TrimSpace(a[i]) != strings.TrimSpace(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func resolveAllowedNodeSources(nodeUUIDs []string, stack string) []struct{ IP, Name string } {
+	seen := map[string]struct{}{}
+	out := make([]struct{ IP, Name string }, 0, len(nodeUUIDs))
+	for _, rawID := range nodeUUIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		cli, err := clients.GetClientByUUID(id)
+		if err != nil {
+			continue
+		}
+		ip := strings.TrimSpace(cli.IPv4)
+		if stack == v2.FirewallStackV6 {
+			ip = strings.TrimSpace(cli.IPv6)
+		}
+		if ip == "" {
+			continue
+		}
+		if _, dup := seen[ip]; dup {
+			continue
+		}
+		seen[ip] = struct{}{}
+		name := strings.TrimSpace(cli.Name)
+		if name == "" {
+			name = id
+		}
+		out = append(out, struct{ IP, Name string }{IP: ip, Name: name})
+	}
+	return out
 }
 
 func LinkInbound(nodeUUID string, inbound nodemgtmodels.Inbound) error {
@@ -119,7 +166,61 @@ func replaceInboundRules(nodeUUID string, inbound nodemgtmodels.Inbound, cfg inb
 		}
 		proto := ProtocolForInbound(inbound.Protocol, listenNet)
 		priority := nextPriority(intent.Rules)
+		restrictNodes := len(cfg.FirewallAllowNodes) > 0
 		for _, stack := range StacksForInbound(cfg.Stack) {
+			if restrictNodes {
+				sources := resolveAllowedNodeSources(cfg.FirewallAllowNodes, stack)
+				for _, src := range sources {
+					base := v2.FirewallRule{
+						Enabled:   inbound.Enabled,
+						Action:    v2.FirewallActionAllow,
+						Protocol:  proto,
+						Port:      fmt.Sprintf("%d", inbound.Port),
+						Source:    src.IP,
+						Stack:     stack,
+						Origin:    v2.FirewallOriginInbound,
+						Priority:  priority,
+						InboundID: inbound.ID,
+					}
+					for _, expanded := range ExpandProtocols(base) {
+						expanded.Comment = InboundComment(inbound.Name, inbound.Protocol, expanded.Protocol, stack, inbound.Port) + " [" + src.Name + "]"
+						rule, err := NormalizeRule(expanded)
+						if err != nil {
+							return err
+						}
+						before := len(intent.Rules)
+						intent.Rules = UpsertRuleByIdentity(intent.Rules, rule)
+						if len(intent.Rules) > before {
+							priority++
+						}
+					}
+				}
+				// Add a trailing deny rule on this port so non-whitelisted IPs are blocked even when default_deny is off.
+				denyBase := v2.FirewallRule{
+					Enabled:   inbound.Enabled,
+					Action:    v2.FirewallActionDeny,
+					Protocol:  proto,
+					Port:      fmt.Sprintf("%d", inbound.Port),
+					Source:    "",
+					Stack:     stack,
+					Origin:    v2.FirewallOriginInbound,
+					Priority:  priority,
+					InboundID: inbound.ID,
+				}
+				for _, expanded := range ExpandProtocols(denyBase) {
+					expanded.Comment = InboundComment(inbound.Name, inbound.Protocol, expanded.Protocol, stack, inbound.Port) + " [deny-others]"
+					rule, err := NormalizeRule(expanded)
+					if err != nil {
+						return err
+					}
+					before := len(intent.Rules)
+					intent.Rules = UpsertRuleByIdentity(intent.Rules, rule)
+					if len(intent.Rules) > before {
+						priority++
+					}
+				}
+				continue
+			}
 			base := v2.FirewallRule{
 				Enabled:   inbound.Enabled,
 				Action:    v2.FirewallActionAllow,

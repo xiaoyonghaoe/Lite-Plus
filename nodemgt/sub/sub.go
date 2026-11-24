@@ -190,10 +190,18 @@ func assembleWithAddrs(user models.NodeUser, inbounds []models.Inbound, creds []
 		if !in.Enabled {
 			continue
 		}
-		if granted != nil && !granted[in.ID] {
+		cfg := inboundcfg.Parse(in.SettingsJSON)
+		vtags := inboundcfg.NormalizeVirtualTags(cfg.VirtualTags)
+		allowBase := granted == nil || granted[in.ID]
+		var allowedTags []string
+		for _, tag := range vtags {
+			if granted == nil || granted[inboundcfg.FormatVirtualInboundID(in.ID, tag)] {
+				allowedTags = append(allowedTags, tag)
+			}
+		}
+		if !allowBase && len(allowedTags) == 0 {
 			continue
 		}
-		cfg := inboundcfg.Parse(in.SettingsJSON)
 		var addrs nodeAddr
 		if nodeHosts != nil {
 			addrs = nodeHosts[in.NodeUUID]
@@ -223,43 +231,64 @@ func assembleWithAddrs(user models.NodeUser, inbounds []models.Inbound, creds []
 		if strings.EqualFold(in.Protocol, "hysteria2") || strings.EqualFold(in.Protocol, "tuic") {
 			fingerprint = ""
 		}
-		sharePass := password
 		cipher := cfg.SSMethod
+		var ssServerPass string
 		if strings.EqualFold(in.Protocol, "shadowsocks") {
 			if cipher == "" {
 				cipher = inboundcfg.DefaultSSMethod()
 			}
 			if inboundcfg.IsSS2022(cipher) {
-				ssPass := cfg.SSPassword
-				if opened, err := secretcrypt.Open(ssPass); err == nil {
-					ssPass = opened
+				ssServerPass = cfg.SSPassword
+				if opened, err := secretcrypt.Open(ssServerPass); err == nil {
+					ssServerPass = opened
 				}
-				sharePass = inboundcfg.SS2022SharePassword(ssPass, password, in.ID, cipher)
 			}
 		}
-		nodes = append(nodes, Node{
-			Name:        shareName(in),
-			Protocol:    in.Protocol,
-			Host:        host,
-			Port:        port,
-			UUID:        uuid,
-			Username:    strings.TrimSpace(user.Username),
-			Password:    sharePass,
-			Security:    security,
-			Type:        transport,
-			Path:        path,
-			HostHeader:  hostHeader,
-			SNI:         sni,
-			Flow:        flow,
-			Fingerprint: fingerprint,
-			PublicKey:   cfg.RealityPublicKey,
-			ShortID:     cfg.RealityShortID,
-			SpiderX:     cfg.SpiderX,
-			ServiceName: serviceName,
-			ALPN:        cfg.ALPN,
-			Mode:        mode,
-			Cipher:      cipher,
-		})
+		buildNode := func(tag string) Node {
+			nodeName := shareName(in)
+			nodeUUID := uuid
+			nodeUser := strings.TrimSpace(user.Username)
+			nodePass := password
+			if tag != "" {
+				nodeName = nodeName + " - " + tag
+				nodeUUID = inboundcfg.DeriveVirtualUUID(uuid, in.ID, tag)
+				nodeUser = inboundcfg.DeriveVirtualUsername(nodeUser, tag)
+				nodePass = inboundcfg.DeriveVirtualPassword(password, in.ID, tag)
+			}
+			sharePass := nodePass
+			if strings.EqualFold(in.Protocol, "shadowsocks") && inboundcfg.IsSS2022(cipher) {
+				sharePass = inboundcfg.SS2022SharePassword(ssServerPass, nodePass, in.ID, cipher)
+			}
+			return Node{
+				Name:        nodeName,
+				Protocol:    in.Protocol,
+				Host:        host,
+				Port:        port,
+				UUID:        nodeUUID,
+				Username:    nodeUser,
+				Password:    sharePass,
+				Security:    security,
+				Type:        transport,
+				Path:        path,
+				HostHeader:  hostHeader,
+				SNI:         sni,
+				Flow:        flow,
+				Fingerprint: fingerprint,
+				PublicKey:   cfg.RealityPublicKey,
+				ShortID:     cfg.RealityShortID,
+				SpiderX:     cfg.SpiderX,
+				ServiceName: serviceName,
+				ALPN:        cfg.ALPN,
+				Mode:        mode,
+				Cipher:      cipher,
+			}
+		}
+		if allowBase {
+			nodes = append(nodes, buildNode(""))
+		}
+		for _, tag := range allowedTags {
+			nodes = append(nodes, buildNode(tag))
+		}
 	}
 	return nodes
 }

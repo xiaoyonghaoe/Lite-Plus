@@ -13,7 +13,6 @@ import (
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
 	"github.com/nuomiiiii/lite/utils"
 	agent_runtime "github.com/nuomiiiii/lite/web/agent"
-	"github.com/nuomiiiii/lite/web/api/remote"
 	"github.com/nuomiiiii/lite/web/firewall"
 )
 
@@ -141,15 +140,12 @@ func CompleteReport(uuid string, report v2.ProtectionReportParams) {
 }
 
 func NodeSupports(client models.Client) bool {
-	return client.RemoteProtocol == 2 && client.RemoteControlEnabled && client.ServiceProtection && client.ServiceProtectionVersion >= v2.ServiceProtectionVersion
+	return client.RemoteProtocol == 2 && client.ServiceProtection && client.ServiceProtectionVersion >= v2.ServiceProtectionVersion
 }
 
 func UnavailableReason(client models.Client) string {
 	if client.RemoteProtocol != 2 {
 		return "agent_old"
-	}
-	if !client.RemoteControlEnabled {
-		return "remote_off"
 	}
 	if !client.ServiceProtection || client.ServiceProtectionVersion < v2.ServiceProtectionVersion {
 		return "agent_old"
@@ -255,14 +251,7 @@ func dispatchGroupSnapshotFallback(uuid, groupID string) error {
 }
 
 func send(uuid, method string, params any) error {
-	queued := false
-	allowed := agent_runtime.GuardRemoteDelivery(remote.RemoteManagementEnabled, func() {
-		queued = agent_runtime.DispatchV2Event(uuid, method, params)
-	})
-	if !allowed {
-		return errors.New("站点未启用远程管理")
-	}
-	if !queued {
+	if !agent_runtime.DispatchV2Event(uuid, method, params) {
 		return errQueueFull
 	}
 	return nil
@@ -275,15 +264,12 @@ func SyncOnConnect(uuid string) {
 func PushPending(uuid string) {
 	uuid = strings.TrimSpace(uuid)
 	if uuid == "" {
-		if !remote.RemoteManagementEnabled() {
-			return
-		}
 		uuids, err := protstore.DueClientUUIDs()
 		if err != nil {
 			return
 		}
 		for _, id := range uuids {
-			if agent_runtime.GetConnectedClient(id) == nil && !agent_runtime.IsAgentOnline(id) {
+			if !agent_runtime.IsAgentOnline(id) {
 				continue
 			}
 			syncProtection(id, false)

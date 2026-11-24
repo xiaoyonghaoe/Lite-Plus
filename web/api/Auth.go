@@ -13,6 +13,7 @@ import (
 	"github.com/nuomiiiii/lite/database/models"
 	"github.com/nuomiiiii/lite/pkg/config"
 	"github.com/nuomiiiii/lite/pkg/rpc"
+	agent_runtime "github.com/nuomiiiii/lite/web/agent"
 	"gorm.io/gorm"
 )
 
@@ -92,11 +93,13 @@ func IdentityMiddleware() gin.HandlerFunc {
 		c.Set("role", p.PrimaryRole())
 		switch p.Type {
 		case rpc.PrincipalAPIKey:
+			agent_runtime.TouchAdminActivity()
 			// 旧逻辑:API Key 时记录裸 key 与固定占位 uuid。
 			apiKey := c.GetHeader("Authorization")
 			c.Set("api_key", apiKey[len("Bearer "):])
 			c.Set("uuid", "00000000-0000-0000-0000-000000000000")
 		case rpc.PrincipalUser:
+			agent_runtime.TouchAdminActivity()
 			if session, err := c.Cookie("session_token"); err == nil && session != "" {
 				c.Set("session", session)
 			}

@@ -122,5 +122,5 @@ func ReloadReturnRouteSchedule(tasks []models.ReturnRouteTask) error {
 // IsReturnRouteClientOnline reports whether the agent still has a live connection
 // to Lite. V2 pull-only presence is not enough for mainland reachability.
 func IsReturnRouteClientOnline(uuid string) bool {
-	return agentRuntime.GetConnectedClient(uuid) != nil
+	return agentRuntime.IsAgentOnline(uuid)
 }

@@ -35,9 +35,12 @@ func (s *Store) ListUsersOnNode(nodeUUID string) ([]models.NodeUser, error) {
 	if err != nil {
 		return nil, err
 	}
-	inboundIDs := make([]string, 0, len(inbounds))
+	inboundIDs := make([]string, 0, len(inbounds)*2)
 	for _, in := range inbounds {
 		inboundIDs = append(inboundIDs, in.ID)
+		for _, tag := range inboundcfg.NormalizeVirtualTags(inboundcfg.Parse(in.SettingsJSON).VirtualTags) {
+			inboundIDs = append(inboundIDs, inboundcfg.FormatVirtualInboundID(in.ID, tag))
+		}
 	}
 	var granted []string
 	if len(inboundIDs) > 0 {
@@ -113,7 +116,10 @@ func (s *Store) NodeIDsForUser(userID string) ([]string, error) {
 	}
 	ids := make([]string, 0, len(grants))
 	for _, g := range grants {
-		ids = append(ids, g.InboundID)
+		baseID, _ := inboundcfg.SplitVirtualInboundID(g.InboundID)
+		if baseID != "" {
+			ids = append(ids, baseID)
+		}
 	}
 	for _, chunk := range chunkStrings(ids, sqliteChunkSize) {
 		var inbounds []models.Inbound
@@ -179,6 +185,9 @@ func (s *Store) NodeSnapshot(nodeUUID string) (map[string]any, error) {
 	inboundIDs := map[string]struct{}{}
 	for _, in := range inbounds {
 		inboundIDs[in.ID] = struct{}{}
+		for _, tag := range inboundcfg.NormalizeVirtualTags(inboundcfg.Parse(in.SettingsJSON).VirtualTags) {
+			inboundIDs[inboundcfg.FormatVirtualInboundID(in.ID, tag)] = struct{}{}
+		}
 	}
 	userIDs := make([]string, 0, len(users))
 	for _, u := range users {
@@ -313,6 +322,7 @@ func (s *Store) NodeSnapshot(nodeUUID string) (map[string]any, error) {
 		"users":           snapUsers,
 		"certs":           certs,
 		"dial_stack":      s.NodeDialStack(nodeUUID),
+		"stats_enabled":   s.StatsEnabled(),
 	}, nil
 }
 

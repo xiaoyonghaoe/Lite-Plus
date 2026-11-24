@@ -14,6 +14,7 @@ import (
 	"github.com/nuomiiiii/lite/database/accounts"
 	"github.com/nuomiiiii/lite/pkg/config"
 	"github.com/nuomiiiii/lite/pkg/rpc"
+	agent_runtime "github.com/nuomiiiii/lite/web/agent"
 	"github.com/nuomiiiii/lite/web/api"
 	"github.com/nuomiiiii/lite/web/connection"
 )
@@ -96,6 +97,11 @@ func serveWebSocket(c *gin.Context) {
 	defer conn.Close()
 
 	meta := buildContextMeta(c)
+	isAdmin := meta != nil && meta.Principal != nil && (meta.Principal.Type == rpc.PrincipalUser || meta.Principal.Type == rpc.PrincipalAPIKey)
+	if isAdmin {
+		agent_runtime.DashboardAdminConnected()
+		defer agent_runtime.DashboardAdminDisconnected()
+	}
 	for {
 		var req rpc.JsonRpcRequest
 		if err := conn.ReadJSON(&req); err != nil {
@@ -107,6 +113,9 @@ func serveWebSocket(c *gin.Context) {
 			}
 			// 其它视为连接/IO 错误，结束循环
 			break
+		}
+		if isAdmin {
+			agent_runtime.TouchAdminActivity()
 		}
 		if jerr := req.Validate(); jerr != nil {
 			conn.WriteJSON(jerr.ResponseWithID(req.ID))

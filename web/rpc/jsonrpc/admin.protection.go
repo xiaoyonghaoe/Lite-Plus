@@ -3,13 +3,11 @@ package jsonrpc
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/nuomiiiii/lite/database/auditlog"
 	protstore "github.com/nuomiiiii/lite/database/protection"
 	"github.com/nuomiiiii/lite/pkg/rpc"
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
-	"github.com/nuomiiiii/lite/web/api/remote"
 	"github.com/nuomiiiii/lite/web/protection"
 )
 
@@ -28,9 +26,6 @@ func init() {
 func adminGetProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	if err := denyAPIKey(ctx); err != nil {
 		return nil, err
-	}
-	if !remote.RemoteManagementEnabled() {
-		return nil, rpc.MakeError(rpc.PermissionDenied, "站点未启用远程管理", nil)
 	}
 	var params struct {
 		UUID string `json:"uuid"`
@@ -52,9 +47,6 @@ func adminGetProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 func adminPrecheckProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	if err := denyAPIKey(ctx); err != nil {
 		return nil, err
-	}
-	if !remote.RemoteManagementEnabled() {
-		return nil, rpc.MakeError(rpc.PermissionDenied, "站点未启用远程管理", nil)
 	}
 	var params struct {
 		UUID string `json:"uuid"`
@@ -88,14 +80,11 @@ func adminPrecheckProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any,
 }
 
 func adminUpgradeProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
 	}
 	var params struct {
-		UUID   string `json:"uuid"`
-		Grant  string `json:"grant"`
-		PageID string `json:"page_id"`
+		UUID string `json:"uuid"`
 	}
 	if err := req.BindParams(&params); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
@@ -104,15 +93,8 @@ func adminUpgradeProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, 
 	if rpcErr != nil {
 		return nil, rpcErr
 	}
-	if err := remote.AgentRemoteAllowed(client); err != nil {
-		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
 	if err := protection.EnsureApplyAllowed(client.UUID); err != nil {
 		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
 	}
 	actor, ip := auditActor(ctx)
 	auditlog.Event(ip, actor, "info", "audit.protection_upgrade", map[string]string{"name": client.Name})
@@ -124,18 +106,15 @@ func adminUpgradeProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, 
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
 	}
-	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, view), nil
+	return view, nil
 }
 
 func adminSaveProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
 	}
 	var params struct {
 		UUID   string              `json:"uuid"`
-		Grant  string              `json:"grant"`
-		PageID string              `json:"page_id"`
 		Config v2.ProtectionConfig `json:"config"`
 	}
 	if err := req.BindParams(&params); err != nil {
@@ -145,18 +124,11 @@ func adminSaveProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rp
 	if rpcErr != nil {
 		return nil, rpcErr
 	}
-	if err := remote.AgentRemoteAllowed(client); err != nil {
-		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
 	if err := protection.EnsureApplyAllowed(client.UUID); err != nil {
 		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
 	}
 	if _, err := protection.NormalizeConfig(params.Config); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
-	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
 	}
 	if _, err := protection.SaveConfig(client.UUID, params.Config); err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
@@ -167,18 +139,15 @@ func adminSaveProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rp
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
 	}
-	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, view), nil
+	return view, nil
 }
 
 func adminPreviewProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
 	}
 	var params struct {
 		UUID     string `json:"uuid"`
-		Grant    string `json:"grant"`
-		PageID   string `json:"page_id"`
 		SourceID string `json:"source_id"`
 		Path     string `json:"path"`
 		Format   string `json:"format"`
@@ -190,15 +159,8 @@ func adminPreviewProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, 
 	if rpcErr != nil {
 		return nil, rpcErr
 	}
-	if err := remote.AgentRemoteAllowed(client); err != nil {
-		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
 	if err := protection.EnsureApplyAllowed(client.UUID); err != nil {
 		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
 	}
 	result, got, err := protection.DispatchPreview(client.UUID, v2.ProtectionPreviewParams{
 		SourceID: params.SourceID,
@@ -218,18 +180,15 @@ func adminPreviewProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, 
 			view["preview_error"] = result.Error
 		}
 	}
-	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, view), nil
+	return view, nil
 }
 
 func adminUnbanProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
 	}
 	var params struct {
 		UUID    string `json:"uuid"`
-		Grant   string `json:"grant"`
-		PageID  string `json:"page_id"`
 		IP      string `json:"ip"`
 		GroupID string `json:"group_id"`
 		Local   bool   `json:"local"`
@@ -241,15 +200,8 @@ func adminUnbanProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	if rpcErr != nil {
 		return nil, rpcErr
 	}
-	if err := remote.AgentRemoteAllowed(client); err != nil {
-		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
 	if err := protection.EnsureApplyAllowed(client.UUID); err != nil {
 		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
 	}
 	if err := protection.Unban(client.UUID, params.IP, params.GroupID, params.Local); err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
@@ -260,15 +212,12 @@ func adminUnbanProtection(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
 	}
-	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, view), nil
+	return view, nil
 }
 
 func adminListProtectionGroups(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	if err := denyAPIKey(ctx); err != nil {
 		return nil, err
-	}
-	if !remote.RemoteManagementEnabled() {
-		return nil, rpc.MakeError(rpc.PermissionDenied, "站点未启用远程管理", nil)
 	}
 	groups, err := protstore.ListGroups()
 	if err != nil {
@@ -278,9 +227,8 @@ func adminListProtectionGroups(ctx context.Context, req *rpc.JsonRpcRequest) (an
 }
 
 func adminSaveProtectionGroup(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
 	}
 	var params struct {
 		UUID    string   `json:"uuid"`
@@ -288,15 +236,9 @@ func adminSaveProtectionGroup(ctx context.Context, req *rpc.JsonRpcRequest) (any
 		Name    string   `json:"name"`
 		Enabled *bool    `json:"enabled"`
 		Members []string `json:"members"`
-		Grant   string   `json:"grant"`
-		PageID  string   `json:"page_id"`
 	}
 	if err := req.BindParams(&params); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
-	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
 	}
 	var err error
 	if strings.TrimSpace(params.ID) == "" {
@@ -313,26 +255,19 @@ func adminSaveProtectionGroup(ctx context.Context, req *rpc.JsonRpcRequest) (any
 	}
 	actor, ip := auditActor(ctx)
 	auditlog.Event(ip, actor, "info", "audit.protection_group", map[string]string{"name": params.Name})
-	return protectionGrantedView(meta, params.UUID, params.PageID, expires, grantEpoch)
+	return protectionViewOrGroups(params.UUID)
 }
 
 func adminDeleteProtectionGroup(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
 	}
 	var params struct {
-		UUID   string `json:"uuid"`
-		ID     string `json:"id"`
-		Grant  string `json:"grant"`
-		PageID string `json:"page_id"`
+		UUID string `json:"uuid"`
+		ID   string `json:"id"`
 	}
 	if err := req.BindParams(&params); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
-	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
 	}
 	group, err := protstore.GetGroup(params.ID)
 	if err != nil || group == nil {
@@ -346,13 +281,13 @@ func adminDeleteProtectionGroup(ctx context.Context, req *rpc.JsonRpcRequest) (a
 	}
 	actor, ip := auditActor(ctx)
 	auditlog.Event(ip, actor, "info", "audit.protection_group_delete", map[string]string{"name": group.Name})
-	return protectionGrantedView(meta, params.UUID, params.PageID, expires, grantEpoch)
+	return protectionViewOrGroups(params.UUID)
 }
 
-func protectionGrantedView(meta *rpc.ContextMeta, uuid, pageID string, expires time.Time, epoch uint64) (any, *rpc.JsonRpcError) {
+func protectionViewOrGroups(uuid string) (any, *rpc.JsonRpcError) {
 	if strings.TrimSpace(uuid) == "" {
 		groups, _ := protstore.ListGroups()
-		return grantPayload(meta.Principal.UserUUID, meta.SessionToken, pageID, expires, epoch, map[string]any{"groups": groups}), nil
+		return map[string]any{"groups": groups}, nil
 	}
 	client, rpcErr := loadFirewallClient(uuid)
 	if rpcErr != nil {
@@ -362,5 +297,5 @@ func protectionGrantedView(meta *rpc.ContextMeta, uuid, pageID string, expires t
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
 	}
-	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, pageID, expires, epoch, view), nil
+	return view, nil
 }

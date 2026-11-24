@@ -13,7 +13,6 @@ import (
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
 	"github.com/nuomiiiii/lite/utils"
 	agent_runtime "github.com/nuomiiiii/lite/web/agent"
-	"github.com/nuomiiiii/lite/web/api/remote"
 )
 
 var errQueueFull = errors.New("远程事件队列已满，请稍后重试")
@@ -114,16 +113,11 @@ func DispatchSnapshot(uuid string) (v2.FirewallResultParams, bool, error) {
 	startWait(requestID)
 	defer stopWait(requestID)
 	params := v2.FirewallSnapshotParams{RequestID: requestID}
-	ok := false
-	agent_runtime.GuardRemoteDelivery(func() bool {
-		return remote.RemoteManagementEnabled()
-	}, func() {
-		ok = agent_runtime.DispatchV2Event(uuid, v2.MethodAgentFirewallSnapshot, params)
-	})
+	ok := agent_runtime.DispatchV2Event(uuid, v2.MethodAgentFirewallSnapshot, params)
 	if !ok {
 		return v2.FirewallResultParams{}, false, errQueueFull
 	}
-	if agent_runtime.GetConnectedClient(uuid) == nil && !agent_runtime.IsAgentOnline(uuid) {
+	if !agent_runtime.IsAgentOnline(uuid) {
 		return v2.FirewallResultParams{}, false, nil
 	}
 	result, got := waitFor(requestID, snapshotWait)
@@ -141,17 +135,12 @@ func dispatchApply(uuid string, intent v2.FirewallIntent, holes []v2.FirewallHol
 		defer stopWait(requestID)
 	}
 	params := v2.FirewallApplyParams{RequestID: requestID, Intent: intent, ListenHoles: holes}
-	queued := false
-	agent_runtime.GuardRemoteDelivery(func() bool {
-		return remote.RemoteManagementEnabled()
-	}, func() {
-		queued = agent_runtime.DispatchV2Event(uuid, v2.MethodAgentFirewallApply, params)
-	})
+	queued := agent_runtime.DispatchV2Event(uuid, v2.MethodAgentFirewallApply, params)
 	if !queued {
 		_ = fwstore.MarkDelivery(uuid, fwstore.DeliveryFailed, "远程事件队列已满，请稍后重试", 0)
 		return v2.FirewallResultParams{}, false
 	}
-	if agent_runtime.GetConnectedClient(uuid) == nil && !agent_runtime.IsAgentOnline(uuid) {
+	if !agent_runtime.IsAgentOnline(uuid) {
 		_ = fwstore.MarkDelivery(uuid, fwstore.DeliveryQueued, "", 0)
 		return v2.FirewallResultParams{}, false
 	}
@@ -176,7 +165,7 @@ func ClearNode(uuid string) {
 	if intent.Revision == 0 && !intent.BlockPing4 && !intent.BlockPing6 && !intent.DefaultDeny4 && !intent.DefaultDeny6 && strings.TrimSpace(intent.SshPort) == "" && len(intent.Rules) == 0 {
 		return
 	}
-	if agent_runtime.GetConnectedClient(uuid) == nil && !agent_runtime.IsAgentOnline(uuid) {
+	if !agent_runtime.IsAgentOnline(uuid) {
 		return
 	}
 	empty := v2.FirewallIntent{Revision: intent.Revision + 1, Rules: []v2.FirewallRule{}}
@@ -188,38 +177,12 @@ func DispatchAdopt(uuid string, keys []string) (v2.FirewallResultParams, bool) {
 	startWait(requestID)
 	defer stopWait(requestID)
 	params := v2.FirewallAdoptParams{RequestID: requestID, Keys: keys}
-	ok := false
-	agent_runtime.GuardRemoteDelivery(func() bool {
-		return remote.RemoteManagementEnabled()
-	}, func() {
-		ok = agent_runtime.DispatchV2Event(uuid, v2.MethodAgentFirewallAdopt, params)
-	})
-	if !ok || (agent_runtime.GetConnectedClient(uuid) == nil && !agent_runtime.IsAgentOnline(uuid)) {
+	ok := agent_runtime.DispatchV2Event(uuid, v2.MethodAgentFirewallAdopt, params)
+	if !ok || !agent_runtime.IsAgentOnline(uuid) {
 		return v2.FirewallResultParams{}, false
 	}
 	result, got := waitFor(requestID, applyWait)
 	return result, got
-}
-
-func DispatchInstall(uuid string) (v2.FirewallResultParams, bool, error) {
-	requestID := newRequestID()
-	startWait(requestID)
-	defer stopWait(requestID)
-	params := v2.FirewallInstallParams{RequestID: requestID}
-	ok := false
-	agent_runtime.GuardRemoteDelivery(func() bool {
-		return remote.RemoteManagementEnabled()
-	}, func() {
-		ok = agent_runtime.DispatchV2Event(uuid, v2.MethodAgentFirewallInstall, params)
-	})
-	if !ok {
-		return v2.FirewallResultParams{}, false, errQueueFull
-	}
-	if agent_runtime.GetConnectedClient(uuid) == nil && !agent_runtime.IsAgentOnline(uuid) {
-		return v2.FirewallResultParams{}, false, nil
-	}
-	result, got := waitFor(requestID, installWait)
-	return result, got, nil
 }
 
 func PushPending(uuid string) {
@@ -253,9 +216,6 @@ func SyncOnConnect(uuid string) {
 }
 
 func pushRow(row models.ClientFirewallIntent, force bool) {
-	if !remote.RemoteManagementEnabled() {
-		return
-	}
 	if row.Revision == 0 {
 		return
 	}
@@ -285,9 +245,6 @@ func pushRow(row models.ClientFirewallIntent, force bool) {
 	}
 	client, err := clients.GetClientByUUID(row.Client)
 	if err != nil {
-		return
-	}
-	if remote.AgentRemoteAllowed(client) != nil {
 		return
 	}
 	if !client.Firewall || client.FirewallVersion < v2.FirewallVersion {
@@ -353,9 +310,6 @@ var (
 )
 
 func EnsureApplyAllowed(uuid string) error {
-	if !remote.RemoteManagementEnabled() {
-		return ErrSiteRemoteOff
-	}
 	client, err := clients.GetClientByUUID(uuid)
 	if err != nil {
 		return err
@@ -366,22 +320,17 @@ func EnsureApplyAllowed(uuid string) error {
 			return ErrFirewallUnsupported
 		}
 		return ErrAgentTooOld
-	case "remote_off":
-		return ErrAgentRemoteOff
 	}
 	return nil
 }
 
 func NodeSupports(client models.Client) bool {
-	return client.RemoteProtocol == 2 && client.RemoteControlEnabled && client.Firewall && client.FirewallVersion >= v2.FirewallVersion
+	return client.RemoteProtocol == 2 && client.Firewall && client.FirewallVersion >= v2.FirewallVersion
 }
 
 func UnavailableReason(client models.Client) string {
 	if client.RemoteProtocol != 2 {
 		return "agent_old"
-	}
-	if !client.RemoteControlEnabled {
-		return "remote_off"
 	}
 	if !client.Firewall || client.FirewallVersion < v2.FirewallVersion {
 		return "agent_old"

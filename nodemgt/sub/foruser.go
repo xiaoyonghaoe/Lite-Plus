@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	dbmodels "github.com/nuomiiiii/lite/database/models"
+	"github.com/nuomiiiii/lite/nodemgt/inboundcfg"
 	"github.com/nuomiiiii/lite/nodemgt/models"
 	"github.com/nuomiiiii/lite/nodemgt/store"
 )
@@ -35,10 +36,26 @@ func ForUser(st *store.Store, user models.NodeUser) ([]Node, error) {
 	return assembleWithAddrs(user, inbounds, creds, granted, nodeShareAddrs(st, inbounds, granted), certs), nil
 }
 
+func inboundGrantedAny(in models.Inbound, granted map[string]bool) bool {
+	if granted == nil {
+		return true
+	}
+	if granted[in.ID] {
+		return true
+	}
+	cfg := inboundcfg.Parse(in.SettingsJSON)
+	for _, tag := range inboundcfg.NormalizeVirtualTags(cfg.VirtualTags) {
+		if granted[inboundcfg.FormatVirtualInboundID(in.ID, tag)] {
+			return true
+		}
+	}
+	return false
+}
+
 func nodeShareAddrs(st *store.Store, inbounds []models.Inbound, granted map[string]bool) map[string]nodeAddr {
 	hosts := map[string]nodeAddr{}
 	for _, in := range inbounds {
-		if granted != nil && !granted[in.ID] {
+		if !inboundGrantedAny(in, granted) {
 			continue
 		}
 		if _, ok := hosts[in.NodeUUID]; ok {

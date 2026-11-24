@@ -25,59 +25,45 @@ var (
 	postPresenceStates = make(map[string]*postPresenceEntry)
 )
 
-// refreshPostPresence 管理 HTTP POST 上报者的在线/离线状态。
-// 每次 POST 刷新 TTL 定时器；定时器到期后触发离线通知。
-// 协议版本不再写在这里：v1 已移除，在线只看 WS 连接或这条 presence TTL。
+// refreshPostPresence 使用默认最小 TTL 刷新 HTTP POST 上报者的在线/离线状态。
 func refreshPostPresence(uuid string) {
+	refreshPostPresenceWithTTL(uuid, postPresenceTTL)
+}
+
+// refreshPostPresenceWithTTL 管理 HTTP POST 上报者的在线/离线状态。
+// 每次 POST 按当前下发的上报周期动态刷新 TTL 定时器，防止闲置慢周期下误报离线。
+func refreshPostPresenceWithTTL(uuid string, ttl time.Duration) {
+	if ttl < postPresenceTTL {
+		ttl = postPresenceTTL
+	}
 	postPresenceMu.Lock()
 	defer postPresenceMu.Unlock()
 
 	if entry, exists := postPresenceStates[uuid]; exists {
-		// 已在线：递增 generation 使可能正在执行的旧回调失效
 		entry.generation++
 		entry.timer.Stop()
-		// 重新创建 AfterFunc 以在闭包中捕获新的 generation
 		gen := entry.generation
-		entry.timer = time.AfterFunc(postPresenceTTL, func() {
+		entry.timer = time.AfterFunc(ttl, func() {
 			postPresenceExpired(uuid, entry.connID, gen)
 		})
-		agent_runtime.KeepAlivePresence(uuid, entry.connID, postPresenceTTL)
+		agent_runtime.KeepAlivePresence(uuid, entry.connID, ttl)
 		return
 	}
 
-	// 新 POST 会话：生成全局唯一 connID，标记在线并同步登记连接状态，启动超时定时器
 	connID := connection.NextID()
-	agent_runtime.KeepAlivePresence(uuid, connID, postPresenceTTL)
+	agent_runtime.KeepAlivePresence(uuid, connID, ttl)
 	notifier.NotifyOnlineAsync(uuid, connID)
 
 	defaultGeneration := uint64(0)
-
 	entry := &postPresenceEntry{
 		connID:     connID,
 		generation: defaultGeneration,
 	}
-
-	entry.timer = time.AfterFunc(postPresenceTTL, func() {
+	entry.timer = time.AfterFunc(ttl, func() {
 		postPresenceExpired(uuid, connID, defaultGeneration)
 	})
 
 	postPresenceStates[uuid] = entry
-}
-
-// clearPostPresence 在节点建立 WebSocket 主通道时立即清理残留的 HTTP presence 会话，
-// 避免 WebSocket 随后在 35s 窗口内真断线时被未过期的 HTTP TTL 吞掉离线告警。
-func clearPostPresence(uuid string) {
-	postPresenceMu.Lock()
-	entry, ok := postPresenceStates[uuid]
-	if ok {
-		entry.generation++
-		entry.timer.Stop()
-		delete(postPresenceStates, uuid)
-	}
-	postPresenceMu.Unlock()
-	if ok {
-		agent_runtime.SetPresence(uuid, entry.connID, false)
-	}
 }
 
 // postPresenceExpired 是定时器到期的回调。

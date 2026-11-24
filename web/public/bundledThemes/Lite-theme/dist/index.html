@@ -95,18 +95,20 @@
           setTheme(theme)
         }
 
-        // Add loaded class after React has mounted
-        window.addEventListener("load", () => {
+        // Add loaded class as soon as DOM is ready (do not block on external fonts/load)
+        function showRoot() {
           const root = document.getElementById("root")
           if (root) {
-            // 使用 RAF 确保在下一帧渲染
             requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                root.classList.add("loaded")
-              })
+              root.classList.add("loaded")
             })
           }
-        })
+        }
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", showRoot, { once: true })
+        } else {
+          showRoot()
+        }
       })()
     </script>
     <meta charset="UTF-8" />
@@ -121,9 +123,6 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Lite" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=lite-icon-0e86dd" />
     <script type="module" crossorigin src="/assets/index.ByzvVV7V.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index.Dpvgc7wQ.css">

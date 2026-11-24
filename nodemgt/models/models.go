@@ -119,7 +119,7 @@ func (ForwardLink) TableName() string { return "nodemgt_forward_links" }
 type Grant struct {
 	ID        string    `json:"id" gorm:"type:varchar(36);primaryKey"`
 	UserID    string    `json:"user_id" gorm:"type:varchar(36);index;not null"`
-	InboundID string    `json:"inbound_id" gorm:"type:varchar(36);index;not null"`
+	InboundID string    `json:"inbound_id" gorm:"type:varchar(80);index;not null"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -372,6 +372,29 @@ type UserIP struct {
 
 func (UserIP) TableName() string { return "nodemgt_user_ips" }
 
+type NodeInboundStatDaily struct {
+	Day       string    `json:"day" gorm:"type:varchar(10);primaryKey"`
+	NodeUUID  string    `json:"node_uuid" gorm:"type:varchar(36);primaryKey"`
+	InboundID string    `json:"inbound_id" gorm:"type:varchar(80);primaryKey"`
+	UserID    string    `json:"user_id" gorm:"type:varchar(36);primaryKey"`
+	UpBytes   int64     `json:"up_bytes" gorm:"not null;default:0"`
+	DownBytes int64     `json:"down_bytes" gorm:"not null;default:0"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (NodeInboundStatDaily) TableName() string { return "nodemgt_inbound_stats_daily" }
+
+type NodeDomainStatDaily struct {
+	Day       string    `json:"day" gorm:"type:varchar(10);primaryKey"`
+	NodeUUID  string    `json:"node_uuid" gorm:"type:varchar(36);primaryKey"`
+	InboundID string    `json:"inbound_id" gorm:"type:varchar(80);primaryKey"`
+	Domain    string    `json:"domain" gorm:"type:varchar(191);primaryKey"`
+	Bytes     int64     `json:"bytes" gorm:"not null;default:0"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (NodeDomainStatDaily) TableName() string { return "nodemgt_domain_stats_daily" }
+
 func All() []any {
 	return []any{
 		&Inbound{},
@@ -397,5 +420,7 @@ func All() []any {
 		&Setting{},
 		&NodeProfile{},
 		&UserIP{},
+		&NodeInboundStatDaily{},
+		&NodeDomainStatDaily{},
 	}
 }

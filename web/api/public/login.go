@@ -10,8 +10,8 @@ import (
 	"github.com/nuomiiiii/lite/database/auditlog"
 	"github.com/nuomiiiii/lite/pkg/config"
 	"github.com/nuomiiiii/lite/utils"
+	agent_runtime "github.com/nuomiiiii/lite/web/agent"
 	"github.com/nuomiiiii/lite/web/api"
-	"github.com/nuomiiiii/lite/web/remotectl"
 
 	"github.com/gin-gonic/gin"
 )
@@ -99,6 +99,7 @@ func Login(c *gin.Context) {
 		return
 	}
 	setSessionCookie(c, session, sessionCookieMaxAgeSeconds())
+	agent_runtime.TouchAdminActivity()
 	accounts.ClearLoginFailures(c.ClientIP(), data.Username)
 	auditlog.Event(c.ClientIP(), uuid, "login", "audit.login_password", nil)
 	api.RespondSuccess(c, gin.H{})
@@ -106,7 +107,6 @@ func Login(c *gin.Context) {
 func Logout(c *gin.Context) {
 	session, _ := c.Cookie("session_token")
 	accounts.DeleteSession(session)
-	remotectl.RevokeLogin(session)
 	setSessionCookie(c, "", -1)
 	auditlog.Event(c.ClientIP(), "", "logout", "audit.logout", nil)
 	c.Redirect(302, "/")

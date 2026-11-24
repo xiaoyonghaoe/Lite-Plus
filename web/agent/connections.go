@@ -7,15 +7,13 @@ import (
 
 	"github.com/nuomiiiii/lite/database/metricstore"
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
-	"github.com/nuomiiiii/lite/web/connection"
 )
 
 var (
-	connectedClients = make(map[string]*connection.SafeConn)
-	latestReport     = make(map[string]*v2.Report)
-	recentReports    = make(map[string][]v2.Report)
-	// presenceOnly stores online state for non-WebSocket agents.
-	// value keeps connectionID and a soft expiration to avoid flicker
+	latestReport  = make(map[string]*v2.Report)
+	recentReports = make(map[string][]v2.Report)
+	// presenceOnly stores online state for HTTP-reporting agents.
+	// value keeps connectionID and a soft expiration to avoid flicker.
 	presenceOnly = make(map[string]struct {
 		id     int64
 		expire time.Time
@@ -25,68 +23,32 @@ var (
 
 const recentReportRetention = time.Minute
 
-func GetConnectedClient(uuid string) *connection.SafeConn {
-	mu.RLock()
-	defer mu.RUnlock()
-	return connectedClients[uuid]
-}
-
-// IsPresent matches dashboard online: WebSocket or a live HTTP presence TTL.
+// IsPresent reports whether the node has a live HTTP presence TTL.
 func IsPresent(uuid string) bool {
 	_, ok := ActiveConnectionID(uuid)
 	return ok
 }
 
-// ActiveConnectionID returns the active session ID for a reachable node,
-// preferring a live WebSocket connection over an HTTP presence TTL.
+// ActiveConnectionID returns the active session ID for a reachable node.
 func ActiveConnectionID(uuid string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	if conn, ok := connectedClients[uuid]; ok && conn != nil {
-		return conn.ID, true
-	}
 	if presence, ok := presenceOnly[uuid]; ok && presence.expire.After(time.Now()) {
 		return presence.id, true
 	}
 	return 0, false
 }
 
-func SetConnectedClients(uuid string, conn *connection.SafeConn) {
-	if metricstore.EntityWritesBlocked(uuid) {
-		_ = conn.Close()
-		return
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	connectedClients[uuid] = conn
-}
-
-func DeleteClientConditionally(uuid string, connToRemove *connection.SafeConn) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	// 检查当前 map 里的 conn 是否就是要删除的这一个
-	if currentConn, exists := connectedClients[uuid]; exists && currentConn == connToRemove {
-		delete(connectedClients, uuid)
-	}
-}
 func DeleteConnectedClients(uuid string) {
 	mu.Lock()
-	conn := connectedClients[uuid]
-	delete(connectedClients, uuid)
 	delete(presenceOnly, uuid)
 	delete(latestReport, uuid)
 	delete(recentReports, uuid)
 	mu.Unlock()
-	if conn != nil {
-		_ = conn.Close()
-	}
 	RemoveV2EventQueue(uuid)
 }
 
-// SetPresence sets or clears presence for non-WebSocket agents.
-// When present=false, it only clears if the connectionID matches current one.
-// KeepAlivePresence sets presence with TTL for non-WebSocket agents.
+// KeepAlivePresence sets presence with TTL for HTTP-reporting agents.
 func KeepAlivePresence(uuid string, connectionID int64, ttl time.Duration) {
 	if metricstore.EntityWritesBlocked(uuid) {
 		return
@@ -99,9 +61,10 @@ func KeepAlivePresence(uuid string, connectionID int64, ttl time.Duration) {
 	}{id: connectionID, expire: time.Now().Add(ttl)}
 }
 
-var defaultPresenceTTL = 20 * time.Second
+var defaultPresenceTTL = 35 * time.Second
 
-// SetPresence keeps compatibility with existing callers.
+// SetPresence sets or clears presence for HTTP-reporting agents.
+// When present=false, it only clears if the connectionID matches the current one.
 func SetPresence(uuid string, connectionID int64, present bool) {
 	if present && metricstore.EntityWritesBlocked(uuid) {
 		return
@@ -120,26 +83,20 @@ func SetPresence(uuid string, connectionID int64, present bool) {
 	}
 }
 
-// GetAllOnlineUUIDs returns a de-duplicated list of online UUIDs from both WebSocket and non-WebSocket agents.
+// GetAllOnlineUUIDs returns a list of online UUIDs with active presence TTLs.
 func GetAllOnlineUUIDs() []string {
 	mu.RLock()
 	defer mu.RUnlock()
-	set := make(map[string]struct{})
-	for k := range connectedClients {
-		set[k] = struct{}{}
-	}
 	now := time.Now()
+	res := make([]string, 0, len(presenceOnly))
 	for k, v := range presenceOnly {
 		if v.expire.After(now) {
-			set[k] = struct{}{}
+			res = append(res, k)
 		}
-	}
-	res := make([]string, 0, len(set))
-	for k := range set {
-		res = append(res, k)
 	}
 	return res
 }
+
 func GetLatestReport() map[string]*v2.Report {
 	mu.RLock()
 	defer mu.RUnlock()

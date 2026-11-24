@@ -108,7 +108,33 @@ func (s *Store) pruneOrphanGrants() error {
 	if !s.db.Migrator().HasTable(&models.Grant{}) || !s.db.Migrator().HasTable(&models.Inbound{}) {
 		return nil
 	}
-	return s.db.Where("inbound_id NOT IN (?)", s.db.Model(&models.Inbound{}).Select("id")).Delete(&models.Grant{}).Error
+	var inbounds []models.Inbound
+	if err := s.db.Select("id", "settings_json").Find(&inbounds).Error; err != nil {
+		return err
+	}
+	valid := make(map[string]struct{}, len(inbounds)*2)
+	for _, in := range inbounds {
+		valid[in.ID] = struct{}{}
+		for _, tag := range inboundcfg.NormalizeVirtualTags(inboundcfg.Parse(in.SettingsJSON).VirtualTags) {
+			valid[inboundcfg.FormatVirtualInboundID(in.ID, tag)] = struct{}{}
+		}
+	}
+	var grants []models.Grant
+	if err := s.db.Select("id", "inbound_id").Find(&grants).Error; err != nil {
+		return err
+	}
+	var orphanIDs []string
+	for _, g := range grants {
+		if _, ok := valid[g.InboundID]; !ok {
+			orphanIDs = append(orphanIDs, g.ID)
+		}
+	}
+	for _, chunk := range chunkStrings(orphanIDs, sqliteChunkSize) {
+		if err := s.db.Where("id IN ?", chunk).Delete(&models.Grant{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) backfillCertAutoRenew() error {
@@ -533,7 +559,7 @@ func (s *Store) DeleteInbound(id string) error {
 		if _, err := detachInboundChainsTx(tx, id); err != nil {
 			return err
 		}
-		if err := tx.Where("inbound_id = ?", id).Delete(&models.Grant{}).Error; err != nil {
+		if err := tx.Where("inbound_id = ? OR inbound_id LIKE ?", id, id+"#%").Delete(&models.Grant{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&models.Inbound{}, "id = ?", id).Error
@@ -1080,7 +1106,8 @@ func (s *Store) userViews(users []models.NodeUser) ([]UserView, error) {
 	for _, g := range grantRows {
 		grantsByUser[g.UserID] = append(grantsByUser[g.UserID], g)
 		if g.InboundID != "" {
-			inboundIDSet[g.InboundID] = struct{}{}
+			baseID, _ := inboundcfg.SplitVirtualInboundID(g.InboundID)
+			inboundIDSet[baseID] = struct{}{}
 		}
 	}
 
@@ -1179,8 +1206,13 @@ func (s *Store) userViews(users []models.NodeUser) ([]UserView, error) {
 		}
 		for _, g := range grantsByUser[user.ID] {
 			view.InboundIDs = append(view.InboundIDs, g.InboundID)
-			if name, ok := inboundNameByID[g.InboundID]; ok {
-				view.InboundNames = append(view.InboundNames, name)
+			baseID, tag := inboundcfg.SplitVirtualInboundID(g.InboundID)
+			if name, ok := inboundNameByID[baseID]; ok {
+				if tag != "" {
+					view.InboundNames = append(view.InboundNames, name+" ["+tag+"]")
+				} else {
+					view.InboundNames = append(view.InboundNames, name)
+				}
 			}
 		}
 		if asg, ok := latestAsg[user.ID]; ok {

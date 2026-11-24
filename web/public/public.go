@@ -157,12 +157,12 @@ func renderPublicDocumentTitle(htmlStr, title string) string {
 		return htmlStr
 	}
 
-	title = strings.TrimSpace(title)
+	title = strings.Join(strings.Fields(title), " ")
 	if title == "" {
 		title = config.DefaultSitename
 	}
 	encodedTitle, _ := json.Marshal(title)
-	script := `<script ` + documentTitleSyncMarker + `>(()=>{const expectedTitle=` + string(encodedTitle) + `;const syncTitle=()=>{if(document.title!==expectedTitle){document.title=expectedTitle;}};syncTitle();if(document.head){new MutationObserver(syncTitle).observe(document.head,{childList:true,subtree:true,characterData:true});}})();</script>`
+	script := `<script ` + documentTitleSyncMarker + `>(()=>{const expectedTitle=` + string(encodedTitle) + `.replace(/\s+/g," ").trim();let syncing=false;const syncTitle=()=>{if(syncing||!expectedTitle)return;if(document.title.replace(/\s+/g," ").trim()!==expectedTitle){syncing=true;document.title=expectedTitle;syncing=false;}};syncTitle();if(document.head){new MutationObserver(syncTitle).observe(document.head,{childList:true,subtree:true,characterData:true});}})();</script>`
 	if location := bodyClosePattern.FindStringIndex(htmlStr); location != nil {
 		return htmlStr[:location[0]] + script + htmlStr[location[0]:]
 	}

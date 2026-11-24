@@ -13,7 +13,6 @@ import (
 	"github.com/nuomiiiii/lite/pkg/rpc"
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
 	agent_runtime "github.com/nuomiiiii/lite/web/agent"
-	"github.com/nuomiiiii/lite/web/api/remote"
 	"github.com/nuomiiiii/lite/web/firewall"
 )
 
@@ -22,7 +21,6 @@ func init() {
 	reg("saveFirewall", adminSaveFirewall, "Save and apply per-node firewall intent")
 	reg("snapshotFirewall", adminSnapshotFirewall, "Scan host firewall rules")
 	reg("adoptFirewall", adminAdoptFirewall, "Adopt host firewall rules into Plus")
-	reg("installFirewall", adminInstallFirewall, "Install nftables on a node with no host firewall")
 }
 
 type firewallSaveBody struct {
@@ -34,16 +32,11 @@ type firewallSaveBody struct {
 	SshPort      string            `json:"ssh_port"`
 	OmitKeep     []string          `json:"omit_keep"`
 	Rules        []v2.FirewallRule `json:"rules"`
-	Grant        string            `json:"grant"`
-	PageID       string            `json:"page_id"`
 }
 
 func adminGetFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	if err := denyAPIKey(ctx); err != nil {
 		return nil, err
-	}
-	if !remote.RemoteManagementEnabled() {
-		return nil, rpc.MakeError(rpc.PermissionDenied, "站点未启用远程管理", nil)
 	}
 	var params struct {
 		UUID string `json:"uuid"`
@@ -66,9 +59,6 @@ func adminGetFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 func adminSnapshotFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	if err := denyAPIKey(ctx); err != nil {
 		return nil, err
-	}
-	if !remote.RemoteManagementEnabled() {
-		return nil, rpc.MakeError(rpc.PermissionDenied, "站点未启用远程管理", nil)
 	}
 	var params struct {
 		UUID string `json:"uuid"`
@@ -100,9 +90,8 @@ func adminSnapshotFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 }
 
 func adminSaveFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
 	}
 	var params firewallSaveBody
 	if err := req.BindParams(&params); err != nil {
@@ -111,9 +100,6 @@ func adminSaveFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	client, rpcErr := loadFirewallClient(params.UUID)
 	if rpcErr != nil {
 		return nil, rpcErr
-	}
-	if err := remote.AgentRemoteAllowed(client); err != nil {
-		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
 	}
 	if err := firewall.EnsureApplyAllowed(client.UUID); err != nil {
 		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
@@ -144,10 +130,6 @@ func adminSaveFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if err := firewall.GuardDefaultDeny(client.UUID, fwstore.IntentFromRow(row), intent); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
 	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
-	}
 	saved, err := fwstore.SaveIntent(client.UUID, intent)
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
@@ -167,20 +149,17 @@ func adminSaveFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if got {
 		snap = &result
 	}
-	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, firewallView(client, saved, snap, got)), nil
+	return firewallView(client, saved, snap, got), nil
 }
 
 func adminAdoptFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
 	}
 	var params struct {
 		UUID            string   `json:"uuid"`
 		Keys            []string `json:"keys"`
 		DisableOriginal bool     `json:"disable_original"`
-		Grant           string   `json:"grant"`
-		PageID          string   `json:"page_id"`
 	}
 	if err := req.BindParams(&params); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
@@ -188,9 +167,6 @@ func adminAdoptFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	client, rpcErr := loadFirewallClient(params.UUID)
 	if rpcErr != nil {
 		return nil, rpcErr
-	}
-	if err := remote.AgentRemoteAllowed(client); err != nil {
-		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
 	}
 	if err := firewall.EnsureApplyAllowed(client.UUID); err != nil {
 		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
@@ -249,10 +225,6 @@ func adminAdoptFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
 	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
-	}
 	saved, err := fwstore.SaveIntent(client.UUID, intent)
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
@@ -294,57 +266,7 @@ func adminAdoptFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 			view["disable_original_error"] = disableOriginalError
 		}
 	}
-	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, view), nil
-}
-
-func adminInstallFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	meta, rpcErr := scheduledExecActor(ctx)
-	if rpcErr != nil {
-		return nil, rpcErr
-	}
-	var params struct {
-		UUID   string `json:"uuid"`
-		Grant  string `json:"grant"`
-		PageID string `json:"page_id"`
-	}
-	if err := req.BindParams(&params); err != nil {
-		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
-	}
-	client, rpcErr := loadFirewallClient(params.UUID)
-	if rpcErr != nil {
-		return nil, rpcErr
-	}
-	if err := remote.AgentRemoteAllowed(client); err != nil {
-		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
-	if err := firewall.EnsureApplyAllowed(client.UUID); err != nil {
-		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
-	}
-	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
-	if rpcErr != nil {
-		return nil, rpcErr
-	}
-	actor, ip := auditActor(ctx)
-	auditlog.Event(ip, actor, "info", "audit.firewall_install", map[string]string{"name": client.Name})
-	result, got, err := firewall.DispatchInstall(client.UUID)
-	if err != nil {
-		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
-	}
-	row, _ := fwstore.Get(client.UUID)
-	snap := fwstore.SnapshotFromRow(row)
-	if got {
-		_ = firewall.SaveCleanSnapshot(client.UUID, result)
-		snap = &result
-	}
-	view := firewallView(client, row, snap, got)
-	if got && result.Status != "" && result.Status != v2.FirewallStatusOK {
-		view["delivery_status"] = "failed"
-		view["delivery_error"] = strings.TrimSpace(result.Error)
-	}
-	if !got {
-		view["delivery_status"] = "queued"
-	}
-	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, view), nil
+	return view, nil
 }
 
 func liveInboundIDs(nodeUUID string) (map[string]struct{}, bool) {
@@ -445,6 +367,7 @@ func firewallView(client models.Client, row *models.ClientFirewallIntent, snap *
 		cloned.HasStacks = true
 		cloned.StackV4 = stackV4
 		cloned.StackV6 = stackV6
+		cloned.CanInstallNftables = false
 		if sshPort != "" {
 			cloned.SshPort = sshPort
 		}

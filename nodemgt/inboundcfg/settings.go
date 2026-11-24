@@ -44,8 +44,10 @@ type Settings struct {
 	Sniffing           bool   `json:"sniffing,omitempty"`
 	DestOverride       string `json:"dest_override,omitempty"`
 	RouteOnly          bool   `json:"route_only,omitempty"`
-	ExcludeFromSub     bool   `json:"exclude_from_sub,omitempty"`
-	ShareStrategy      string `json:"share_strategy,omitempty"`
+	ExcludeFromSub     bool     `json:"exclude_from_sub,omitempty"`
+	ShareStrategy      string   `json:"share_strategy,omitempty"`
+	FirewallAllowNodes []string `json:"firewall_allow_nodes,omitempty"`
+	VirtualTags        []string `json:"virtual_tags,omitempty"`
 }
 
 type ProxyAccount struct {

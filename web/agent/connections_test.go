@@ -5,7 +5,6 @@ import (
 	"time"
 
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
-	"github.com/nuomiiiii/lite/web/connection"
 )
 
 func TestRecordReportKeepsLatestAndShortRecentWindow(t *testing.T) {
@@ -53,11 +52,9 @@ func TestRecordReportKeepsLatestAndShortRecentWindow(t *testing.T) {
 
 func TestDeleteConnectedClientsClearsAllRuntimeState(t *testing.T) {
 	mu.Lock()
-	previousConnected := connectedClients
 	previousPresence := presenceOnly
 	previousLatest := latestReport
 	previousRecent := recentReports
-	connectedClients = make(map[string]*connection.SafeConn)
 	presenceOnly = make(map[string]struct {
 		id     int64
 		expire time.Time
@@ -67,7 +64,6 @@ func TestDeleteConnectedClientsClearsAllRuntimeState(t *testing.T) {
 	mu.Unlock()
 	t.Cleanup(func() {
 		mu.Lock()
-		connectedClients = previousConnected
 		presenceOnly = previousPresence
 		latestReport = previousLatest
 		recentReports = previousRecent
@@ -85,7 +81,7 @@ func TestDeleteConnectedClientsClearsAllRuntimeState(t *testing.T) {
 
 	KeepAlivePresence("node-a", 42, time.Minute)
 	RecordReport(v2.Report{UUID: "node-a", UpdatedAt: time.Now().UTC()})
-	EnqueueV2Event("node-a", v2.MethodAgentExec, v2.ExecParams{TaskID: "task"})
+	EnqueueV2Event("node-a", v2.MethodAgentConfig, v2.ConfigParams{})
 	DeleteConnectedClients("node-a")
 
 	if IsAgentOnline("node-a") || GetLatestReport()["node-a"] != nil || len(GetRecentReports("node-a")) != 0 {
@@ -98,9 +94,7 @@ func TestDeleteConnectedClientsClearsAllRuntimeState(t *testing.T) {
 
 func TestIsPresentIncludesHTTPPresence(t *testing.T) {
 	mu.Lock()
-	previousConnected := connectedClients
 	previousPresence := presenceOnly
-	connectedClients = make(map[string]*connection.SafeConn)
 	presenceOnly = make(map[string]struct {
 		id     int64
 		expire time.Time
@@ -108,7 +102,6 @@ func TestIsPresentIncludesHTTPPresence(t *testing.T) {
 	mu.Unlock()
 	t.Cleanup(func() {
 		mu.Lock()
-		connectedClients = previousConnected
 		presenceOnly = previousPresence
 		mu.Unlock()
 	})
@@ -127,9 +120,7 @@ func TestIsPresentIncludesHTTPPresence(t *testing.T) {
 
 func TestIsAgentOnlineDoesNotStickAfterPresenceExpires(t *testing.T) {
 	mu.Lock()
-	previousConnected := connectedClients
 	previousPresence := presenceOnly
-	connectedClients = make(map[string]*connection.SafeConn)
 	presenceOnly = make(map[string]struct {
 		id     int64
 		expire time.Time
@@ -137,7 +128,6 @@ func TestIsAgentOnlineDoesNotStickAfterPresenceExpires(t *testing.T) {
 	mu.Unlock()
 	t.Cleanup(func() {
 		mu.Lock()
-		connectedClients = previousConnected
 		presenceOnly = previousPresence
 		mu.Unlock()
 	})
@@ -149,31 +139,5 @@ func TestIsAgentOnlineDoesNotStickAfterPresenceExpires(t *testing.T) {
 	time.Sleep(40 * time.Millisecond)
 	if IsAgentOnline("node-a") {
 		t.Fatal("expired HTTP presence must not keep a node online")
-	}
-}
-
-func TestGetConnectedClientLooksUpSingleConnection(t *testing.T) {
-	mu.Lock()
-	previousConnected := connectedClients
-	connectedClients = make(map[string]*connection.SafeConn)
-	mu.Unlock()
-	t.Cleanup(func() {
-		mu.Lock()
-		connectedClients = previousConnected
-		mu.Unlock()
-	})
-
-	if GetConnectedClient("node-a") != nil {
-		t.Fatal("missing client returned a connection")
-	}
-	conn := &connection.SafeConn{}
-	mu.Lock()
-	connectedClients["node-a"] = conn
-	mu.Unlock()
-	if got := GetConnectedClient("node-a"); got != conn {
-		t.Fatalf("GetConnectedClient = %v, want the stored connection", got)
-	}
-	if GetConnectedClient("node-b") != nil {
-		t.Fatal("unrelated client returned a connection")
 	}
 }

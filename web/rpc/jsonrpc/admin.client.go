@@ -15,7 +15,6 @@ import (
 	logger "github.com/nuomiiiii/lite/utils/log"
 	"github.com/nuomiiiii/lite/utils/notifier"
 	agent_runtime "github.com/nuomiiiii/lite/web/agent"
-	remote_api "github.com/nuomiiiii/lite/web/api/remote"
 	"github.com/nuomiiiii/lite/web/firewall"
 )
 
@@ -176,13 +175,11 @@ func adminRemoveClient(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	clientName := clients.DisplayName(params.UUID)
 	metricstore.BlockEntityWrites(params.UUID)
 	firewall.ClearNode(params.UUID)
-	remote_api.CloseClientSessions(params.UUID)
 	agent_runtime.DeleteConnectedClients(params.UUID)
 	notifier.ForgetClient(params.UUID)
 	if err := clients.DeleteClient(params.UUID); err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, "Failed to delete client: "+err.Error(), nil)
 	}
-	remote_api.CloseClientSessions(params.UUID)
 	agent_runtime.DeleteConnectedClients(params.UUID)
 	if err := d_notification.ReloadLoadNotificationSchedule(); err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, "Client deleted but failed to reload load notification schedule: "+err.Error(), nil)

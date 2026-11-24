@@ -49,13 +49,10 @@ import (
 	"github.com/nuomiiiii/lite/web/api/admin"
 	"github.com/nuomiiiii/lite/web/firewall"
 	installweb "github.com/nuomiiiii/lite/web/install"
-	"github.com/nuomiiiii/lite/web/mcp"
 	"github.com/nuomiiiii/lite/web/oauth"
 	"github.com/nuomiiiii/lite/web/protection"
 	frontendpublic "github.com/nuomiiiii/lite/web/public"
-	"github.com/nuomiiiii/lite/web/remotectl"
 	"github.com/nuomiiiii/lite/web/router"
-	"github.com/nuomiiiii/lite/web/scheduledexec"
 	"github.com/nuomiiiii/lite/web/security"
 	storageupdateweb "github.com/nuomiiiii/lite/web/storageupdate"
 	"github.com/nuomiiiii/lite/web/upload"
@@ -148,9 +145,6 @@ func (a *App) Bootstrap() error {
 	if err := migrateSessionTTLCap(); err != nil {
 		return fmt.Errorf("failed to cap legacy session expiry: %w", err)
 	}
-	if err := mcp.InvalidateActiveLeases(); err != nil {
-		logger.Errorf("mcp", "Failed to invalidate leftover MCP leases after restart: %v", err)
-	}
 
 	conf, err := config.GetManyAs[config.Settings]()
 	if err != nil {
@@ -188,20 +182,10 @@ func normalizeSiteFactoryDefaults() error {
 	return config.SetMany(updates)
 }
 
-// migrateAllowRemoteManagement keeps remote management on for existing
-// installations and leaves new databases at the Settings default (off).
+// migrateAllowRemoteManagement forces allow_remote_management to false since
+// remote command execution, WebSSH, file access, and MCP have been removed.
 func migrateAllowRemoteManagement() error {
-	all, err := config.GetAll()
-	if err != nil {
-		return err
-	}
-	if _, exists := all[config.AllowRemoteManagementKey]; exists {
-		return nil
-	}
-	if _, hasSite := all[config.SitenameKey]; hasSite {
-		return config.Set(config.AllowRemoteManagementKey, true)
-	}
-	return nil
+	return config.Set(config.AllowRemoteManagementKey, false)
 }
 
 func migrateSessionTTLCap() error {
@@ -313,7 +297,7 @@ var (
 	hasPendingRestoreFn        = dbcore.HasPendingRestore
 	invalidateRestoredSessions = accounts.InvalidateAllSessions
 	commitPendingRestoreFn     = dbcore.CommitPendingRestore
-	revokeRemoteAfterRestore   = remotectl.RevokeAll
+	revokeRemoteAfterRestore   = func() {}
 )
 
 // CommitRestore marks a staged backup as fully usable only after the main
@@ -862,8 +846,6 @@ func registerScheduledWork() {
 		logger.Errorf("server", "Failed to ensure traffic report metric retention: %v", err)
 	}
 
-	scheduledexec.Start()
-
 	if err := corn.AddFunc("records:cleanup", "@every 30m", cleanupScheduledData); err != nil {
 		logger.ErrorArgs("server", "Failed to add cleanup scheduled task:", err)
 	}
@@ -930,9 +912,6 @@ func cleanupScheduledData() {
 
 	auditlog.RemoveOldLogs()
 	accounts.RemoveExpiredSessions()
-	if err := mcp.CleanupHistory(); err != nil {
-		logger.Errorf("server", "Failed to clean MCP history: %v", err)
-	}
 	if err := tasks.CleanupMainlandReachabilityData(); err != nil {
 		logger.Errorf("server", "Failed to clean mainland reachability samples: %v", err)
 	}

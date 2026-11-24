@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nuomiiiii/lite/database/accounts"
 	"github.com/nuomiiiii/lite/web/api"
-	"github.com/nuomiiiii/lite/web/remotectl"
 )
 
 type pendingTwoFactor struct {
@@ -103,7 +102,6 @@ func Disable2FA(c *gin.Context) {
 	}
 	_ = takePendingTwoFactor(session)
 	_ = accounts.DeleteOtherSessions(userUUID, session)
-	remotectl.RevokeUser(userUUID)
 	api.RespondSuccess(c, "")
 }
 
