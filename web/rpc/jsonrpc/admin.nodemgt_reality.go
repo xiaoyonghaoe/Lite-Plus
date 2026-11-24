@@ -11,15 +11,28 @@ import (
 	agent_runtime "github.com/nuomiiiii/lite/web/agent"
 )
 
+var defaultRealityScanTargets = []string{
+	"www.cloudflare.com:443",
+	"www.microsoft.com:443",
+	"www.apple.com:443",
+	"addons.mozilla.org:443",
+	"www.nvidia.com:443",
+	"www.samsung.com:443",
+	"www.amd.com:443",
+	"www.intel.com:443",
+}
+
 func init() {
-	reg("nodemgt.reality.probe", nodemgtRealityProbe, "Probe Reality handshake target from the selected Agent node")
+	reg("nodemgt.reality.probe", nodemgtRealityProbe, "Probe or scan Reality handshake targets from the selected Agent node")
 }
 
 func nodemgtRealityProbe(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var p struct {
-		NodeUUID   string `json:"node_uuid"`
-		Dest       string `json:"dest"`
-		ServerName string `json:"server_name"`
+		NodeUUID   string   `json:"node_uuid"`
+		Dest       string   `json:"dest"`
+		ServerName string   `json:"server_name"`
+		Targets    []string `json:"targets"`
+		Scan       bool     `json:"scan"`
 	}
 	if err := req.BindParams(&p); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
@@ -30,7 +43,20 @@ func nodemgtRealityProbe(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if nodeUUID == "" {
 		return nil, rpc.MakeError(rpc.InvalidParams, "请先选择节点", nil)
 	}
-	if dest == "" {
+	var targets []string
+	for _, t := range p.Targets {
+		if v := strings.TrimSpace(t); v != "" {
+			targets = append(targets, v)
+		}
+	}
+	if p.Scan && len(targets) == 0 {
+		if dest != "" {
+			targets = []string{dest}
+		} else {
+			targets = append([]string(nil), defaultRealityScanTargets...)
+		}
+	}
+	if len(targets) == 0 && dest == "" {
 		return nil, rpc.MakeError(rpc.InvalidParams, "请先填写 Reality 目标地址", nil)
 	}
 	if !agent_runtime.IsAgentOnline(nodeUUID) {
@@ -49,9 +75,10 @@ func nodemgtRealityProbe(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		RequestID:  requestID,
 		Dest:       dest,
 		ServerName: sni,
+		Targets:    targets,
 	})
 
-	res, ok := agent_runtime.WaitRealityProbe(requestID, 15*time.Second)
+	res, ok := agent_runtime.WaitRealityProbe(requestID, 18*time.Second)
 	if !ok {
 		return nil, rpc.MakeError(rpc.InternalError, "等待探针返回探测结果超时（请确认探针已更新到最新版本）", nil)
 	}
