@@ -274,6 +274,13 @@ func handleV2RPCWithPresence(uuid string, req v2.Request, _ bool, markPresence b
 			return v2.Error(req.ID, -32000, "failed to record nodemgt stats", err.Error())
 		}
 		return v2.Success(req.ID, gin.H{"status": "success"})
+	case v2.MethodNodemgtRealityProbeResult:
+		var params v2.RealityProbeResultParams
+		if err := bindV2Params(req.Params, &params); err != nil {
+			return v2.Error(req.ID, -32602, "invalid reality probe result", err.Error())
+		}
+		agent_runtime.CompleteRealityProbe(params)
+		return v2.Success(req.ID, gin.H{"status": "success"})
 	case v2.MethodAgentFirewallResult:
 		var params v2.FirewallResultParams
 		if err := bindV2Params(req.Params, &params); err != nil {

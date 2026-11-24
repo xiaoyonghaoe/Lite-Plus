@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"strings"
 )
 
@@ -101,11 +102,15 @@ func GenerateRealityKeys() (privateKey, publicKey string, err error) {
 }
 
 func DestHost(dest string) string {
-	host, _, found := strings.Cut(strings.TrimSpace(dest), ":")
+	trimmed := strings.TrimSpace(dest)
+	if host, _, err := net.SplitHostPort(trimmed); err == nil {
+		return host
+	}
+	host, _, found := strings.Cut(trimmed, ":")
 	if found {
 		return host
 	}
-	return strings.TrimSpace(dest)
+	return trimmed
 }
 
 // ShareSNI is the name clients should send. Reality uses the dest / server
