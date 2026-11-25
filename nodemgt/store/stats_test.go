@@ -240,9 +240,25 @@ func TestVirtualInboundGrantsAndSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, true, snap["stats_enabled"])
 
-	// Deleting the inbound should also delete virtual grants
+	// Deleting the inbound should also delete virtual grants and traffic/domain stats
+	require.NoError(t, st.RecordStatsBatch("node-v1", StatsBatch{
+		InboundUsage: []InboundUsageDelta{
+			{InboundID: in.ID, UserID: u.ID, UpBytes: 100, DownBytes: 200},
+			{InboundID: virtID, UserID: u.ID, UpBytes: 300, DownBytes: 400},
+		},
+		DomainTop: []DomainUsageDelta{
+			{UserID: u.ID, InboundID: in.ID, Domain: "a.com", UpBytes: 10, DownBytes: 20, Bytes: 30},
+			{UserID: u.ID, InboundID: virtID, Domain: "b.com", UpBytes: 40, DownBytes: 50, Bytes: 90},
+		},
+	}))
 	require.NoError(t, st.DeleteInbound(in.ID))
 	grants, err := st.ListGrants(u.ID)
 	require.NoError(t, err)
 	require.Empty(t, grants)
+	inbAfterDel, _, err := st.QueryInboundStats(7, "node-v1", u.ID)
+	require.NoError(t, err)
+	require.Empty(t, inbAfterDel)
+	domAfterDel, err := st.QueryDomainAnalysis(DomainQueryParams{Window: "30m", UserID: u.ID, TopN: 20})
+	require.NoError(t, err)
+	require.Empty(t, domAfterDel.Domains)
 }

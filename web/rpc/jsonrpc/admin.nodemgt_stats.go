@@ -84,7 +84,29 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		p.Days = 7
 	}
 	st := nodemgtST()
-	nodeStats, inbStats, usrInbStats, startDay, endDay, err := st.QueryNodeAndInboundStats(p.Days, p.NodeUUID, p.UserID)
+
+	// Build display name maps and live inbound allowlist (including virtual inbounds)
+	// so deleted inbounds and removed virtual tags are excluded from stats.
+	inboundNames := map[string]string{}
+	allowedInboundIDs := []string{}
+	if inbs, err := st.ListInbounds(""); err == nil {
+		allowedInboundIDs = make([]string, 0, len(inbs))
+		for _, in := range inbs {
+			baseName := strings.TrimSpace(in.Name)
+			if baseName == "" {
+				baseName = in.ID
+			}
+			inboundNames[in.ID] = baseName
+			allowedInboundIDs = append(allowedInboundIDs, in.ID)
+			for _, tag := range inboundcfg.NormalizeVirtualTags(inboundcfg.Parse(in.SettingsJSON).VirtualTags) {
+				vid := inboundcfg.FormatVirtualInboundID(in.ID, tag)
+				inboundNames[vid] = baseName + " [" + tag + "]"
+				allowedInboundIDs = append(allowedInboundIDs, vid)
+			}
+		}
+	}
+
+	_, inbStats, usrInbStats, startDay, endDay, err := st.QueryNodeAndInboundStats(p.Days, p.NodeUUID, p.UserID)
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
@@ -98,37 +120,25 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		domInboundID = strings.TrimSpace(p.InboundID)
 	}
 	domRes, err := st.QueryDomainAnalysis(store.DomainQueryParams{
-		Window:    p.Window,
-		StartTS:   p.StartTS,
-		EndTS:     p.EndTS,
-		UserID:    p.UserID,
-		NodeUUID:  domNodeUUID,
-		InboundID: domInboundID,
-		Search:    p.Search,
-		TopN:      20,
+		Window:                p.Window,
+		StartTS:               p.StartTS,
+		EndTS:                 p.EndTS,
+		UserID:                p.UserID,
+		NodeUUID:              domNodeUUID,
+		InboundID:             domInboundID,
+		AllowedInboundIDs:     allowedInboundIDs,
+		FilterAllowedInbounds: true,
+		Search:                p.Search,
+		TopN:                  20,
 	})
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
 
-	// Build display name maps for nodes, inbounds (including virtual), and users.
 	nodeNames := map[string]string{}
 	if clis, err := clients.GetAllClientBasicInfo(); err == nil {
 		for _, c := range clis {
 			nodeNames[c.UUID] = c.Name
-		}
-	}
-	inboundNames := map[string]string{}
-	if inbs, err := st.ListInbounds(""); err == nil {
-		for _, in := range inbs {
-			baseName := strings.TrimSpace(in.Name)
-			if baseName == "" {
-				baseName = in.ID
-			}
-			inboundNames[in.ID] = baseName
-			for _, tag := range inboundcfg.NormalizeVirtualTags(inboundcfg.Parse(in.SettingsJSON).VirtualTags) {
-				inboundNames[inboundcfg.FormatVirtualInboundID(in.ID, tag)] = baseName + " [" + tag + "]"
-			}
 		}
 	}
 	userNames := map[string]string{}
@@ -157,15 +167,29 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		return id
 	}
 
+	liveInbStats := make([]store.InboundStatSummary, 0, len(inbStats))
+	nodeAgg := map[string]*store.NodeStatSummary{}
 	var totalUp, totalDown int64
-	for _, row := range nodeStats {
+	for _, row := range inbStats {
+		if _, ok := inboundNames[row.InboundID]; !ok {
+			continue
+		}
+		liveInbStats = append(liveInbStats, row)
 		totalUp += row.UpBytes
 		totalDown += row.DownBytes
+		ns := nodeAgg[row.NodeUUID]
+		if ns == nil {
+			ns = &store.NodeStatSummary{NodeUUID: row.NodeUUID}
+			nodeAgg[row.NodeUUID] = ns
+		}
+		ns.UpBytes += row.UpBytes
+		ns.DownBytes += row.DownBytes
+		ns.Total += row.Total
 	}
 	totalBytes := totalUp + totalDown
 
-	nodeOut := make([]map[string]any, 0, len(nodeStats))
-	for _, row := range nodeStats {
+	nodeOut := make([]map[string]any, 0, len(nodeAgg))
+	for _, row := range nodeAgg {
 		share := 0.0
 		if totalBytes > 0 {
 			share = float64(row.Total) * 100 / float64(totalBytes)
@@ -180,8 +204,8 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		})
 	}
 
-	inbOut := make([]map[string]any, 0, len(inbStats))
-	for _, row := range inbStats {
+	inbOut := make([]map[string]any, 0, len(liveInbStats))
+	for _, row := range liveInbStats {
 		share := 0.0
 		if totalBytes > 0 {
 			share = float64(row.Total) * 100 / float64(totalBytes)
@@ -200,6 +224,9 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 
 	usrOut := make([]map[string]any, 0, len(usrInbStats))
 	for _, row := range usrInbStats {
+		if _, ok := inboundNames[row.InboundID]; !ok {
+			continue
+		}
 		usrOut = append(usrOut, map[string]any{
 			"node_uuid":    row.NodeUUID,
 			"node_name":    nodeNames[row.NodeUUID],

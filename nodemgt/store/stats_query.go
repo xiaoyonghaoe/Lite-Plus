@@ -33,14 +33,16 @@ type UserInboundStatSummary struct {
 }
 
 type DomainQueryParams struct {
-	Window    string
-	StartTS   int64
-	EndTS     int64
-	UserID    string
-	NodeUUID  string
-	InboundID string
-	Search    string
-	TopN      int
+	Window                string
+	StartTS               int64
+	EndTS                 int64
+	UserID                string
+	NodeUUID              string
+	InboundID             string
+	AllowedInboundIDs     []string
+	FilterAllowedInbounds bool
+	Search                string
+	TopN                  int
 }
 
 type DomainBucketTotal struct {
@@ -283,24 +285,30 @@ func (s *Store) QueryDomainAnalysis(p DomainQueryParams) (DomainAnalysisResult, 
 		bucketIdx[b] = i
 	}
 
-	q := s.db.Model(&models.NodeUserDomainStat{}).
-		Where("granularity IN ? AND bucket_ts >= ? AND bucket_ts < ?", queryGrans, startTS, endTS)
-	if uid := strings.TrimSpace(p.UserID); uid != "" {
-		q = q.Where("user_id = ?", uid)
-	}
-	if nid := strings.TrimSpace(p.NodeUUID); nid != "" {
-		q = q.Where("node_uuid = ?", nid)
-	}
-	if inbID := strings.TrimSpace(p.InboundID); inbID != "" {
-		q = q.Where("inbound_id = ?", inbID)
-	}
-	if search := strings.ToLower(strings.TrimSpace(p.Search)); search != "" {
-		q = q.Where("domain LIKE ?", "%"+search+"%")
-	}
-
 	var rows []models.NodeUserDomainStat
-	if err := q.Find(&rows).Error; err != nil {
-		return DomainAnalysisResult{}, err
+	if p.FilterAllowedInbounds && len(p.AllowedInboundIDs) == 0 {
+		rows = nil
+	} else {
+		q := s.db.Model(&models.NodeUserDomainStat{}).
+			Where("granularity IN ? AND bucket_ts >= ? AND bucket_ts < ?", queryGrans, startTS, endTS)
+		if uid := strings.TrimSpace(p.UserID); uid != "" {
+			q = q.Where("user_id = ?", uid)
+		}
+		if nid := strings.TrimSpace(p.NodeUUID); nid != "" {
+			q = q.Where("node_uuid = ?", nid)
+		}
+		if inbID := strings.TrimSpace(p.InboundID); inbID != "" {
+			q = q.Where("inbound_id = ?", inbID)
+		}
+		if p.FilterAllowedInbounds {
+			q = q.Where("inbound_id IN ?", p.AllowedInboundIDs)
+		}
+		if search := strings.ToLower(strings.TrimSpace(p.Search)); search != "" {
+			q = q.Where("domain LIKE ?", "%"+search+"%")
+		}
+		if err := q.Find(&rows).Error; err != nil {
+			return DomainAnalysisResult{}, err
+		}
 	}
 
 	type domAgg struct {

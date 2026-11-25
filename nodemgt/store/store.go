@@ -567,6 +567,13 @@ func (s *Store) DeleteInbound(id string) error {
 		if err := tx.Where("inbound_id = ? OR inbound_id LIKE ?", id, id+"#%").Delete(&models.Grant{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("inbound_id = ? OR inbound_id LIKE ?", id, id+"#%").Delete(&models.NodeInboundStatDaily{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("inbound_id = ? OR inbound_id LIKE ?", id, id+"#%").Delete(&models.NodeUserDomainStat{}).Error; err != nil {
+			return err
+		}
+		_ = tx.Where("inbound_id = ? OR inbound_id LIKE ?", id, id+"#%").Delete(&models.NodeDomainStatDaily{}).Error
 		return tx.Delete(&models.Inbound{}, "id = ?", id).Error
 	})
 }
