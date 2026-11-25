@@ -43,10 +43,10 @@ func DetectClient(ua string) string {
 		{"surge-mac", []string{"surge mac", "surgemac", "surge-mac"}},
 		{"surge", []string{"surge/", "surge "}},
 		{"stash", []string{"stash/", "stash "}},
-		{"sing-box", []string{"sing-box", "singbox"}},
-		{"v2ray", []string{"shadowrocket", "v2ray", "happ/"}},
-		{"mihomo", []string{"mihomo", "clash.meta", "clashmeta", "clash-verge", "clash verge"}},
-		{"clash", []string{"clash/", "clash "}},
+		{"sing-box", []string{"sing-box", "singbox", "sfa/", "sfi/", "sfm/", "karing", "hiddify", "nekobox", "nekoray"}},
+		{"v2ray", []string{"shadowrocket", "v2ray", "v2rayn", "v2rayng", "happ/", "streisand", "foxray", "v2box"}},
+		{"mihomo", []string{"mihomo", "clash.meta", "clashmeta", "clash-verge", "clash verge", "flclash", "clashmi", "clash-nyanpasu", "sparkle"}},
+		{"clash", []string{"clash/", "clash ", "clashx"}},
 	} {
 		for _, marker := range rule.markers {
 			if strings.Contains(u, marker) || strings.TrimSpace(u) == strings.TrimRight(marker, "/ ") {

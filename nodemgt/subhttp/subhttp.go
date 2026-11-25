@@ -458,6 +458,10 @@ func Write(c *gin.Context, st *store.Store, token string) {
 		c.String(http.StatusNotFound, "not found")
 		return
 	}
+	if wantsSharePage(c) {
+		WriteSharePage(c, st, *row)
+		return
+	}
 	doc, err := Generate(st, *row, GenerateRequest{Target: c.Query("target"), Format: c.Query("format"), UserAgent: c.Request.UserAgent()})
 	if err != nil {
 		c.String(http.StatusNotFound, "not found")

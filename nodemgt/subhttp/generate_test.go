@@ -107,6 +107,8 @@ func TestServePanelUsesListenPortIsolation(t *testing.T) {
 
 func TestOldSubscriptionBytesAndTokenSurviveEdits(t *testing.T) {
 	st, row := subscriptionFixture(t)
+	row.AutoDetect = false
+	require.NoError(t, st.UpsertSubscription(&row))
 	user, err := st.GetUser(row.UserID)
 	require.NoError(t, err)
 	nodes, err := sub.ForUser(st, *user)

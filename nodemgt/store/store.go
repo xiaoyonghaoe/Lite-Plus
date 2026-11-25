@@ -1837,7 +1837,7 @@ func (s *Store) EnsureSubscription(userID string) (*models.Subscription, error) 
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	row := &models.Subscription{UserID: userID, Format: "xray", Enabled: true}
+	row := &models.Subscription{UserID: userID, Format: "xray", AutoDetect: true, Enabled: true}
 	if err := s.UpsertSubscription(row); err != nil {
 		return nil, err
 	}
