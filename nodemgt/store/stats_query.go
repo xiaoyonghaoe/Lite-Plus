@@ -33,13 +33,14 @@ type UserInboundStatSummary struct {
 }
 
 type DomainQueryParams struct {
-	Window   string
-	StartTS  int64
-	EndTS    int64
-	UserID   string
-	NodeUUID string
-	Search   string
-	TopN     int
+	Window    string
+	StartTS   int64
+	EndTS     int64
+	UserID    string
+	NodeUUID  string
+	InboundID string
+	Search    string
+	TopN      int
 }
 
 type DomainBucketTotal struct {
@@ -289,6 +290,9 @@ func (s *Store) QueryDomainAnalysis(p DomainQueryParams) (DomainAnalysisResult, 
 	}
 	if nid := strings.TrimSpace(p.NodeUUID); nid != "" {
 		q = q.Where("node_uuid = ?", nid)
+	}
+	if inbID := strings.TrimSpace(p.InboundID); inbID != "" {
+		q = q.Where("inbound_id = ?", inbID)
 	}
 	if search := strings.ToLower(strings.TrimSpace(p.Search)); search != "" {
 		q = q.Where("domain LIKE ?", "%"+search+"%")

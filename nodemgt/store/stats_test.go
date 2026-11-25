@@ -24,17 +24,26 @@ func TestStatsConfigAndTieredTop20Compaction(t *testing.T) {
 	require.NoError(t, st.SetStatsEnabled(true))
 	require.True(t, st.StatsEnabled())
 
-	// 1. Insert 25 domains at 10:10 (closed 5m bucket inside 30m window)
-	domains := make([]DomainUsageDelta, 0, 25)
+	// 1. Insert 25 domains at 10:10 on virtual inbound inb_1#home + 1 domain on primary inb_1
+	domains := make([]DomainUsageDelta, 0, 26)
 	for i := 1; i <= 25; i++ {
 		domains = append(domains, DomainUsageDelta{
 			UserID:    "u1",
+			InboundID: "inb_1#home",
 			Domain:    fmt.Sprintf("example%02d.com", i),
 			UpBytes:   int64(i * 100),
 			DownBytes: int64(i * 900),
 			Bytes:     int64(i * 1000),
 		})
 	}
+	domains = append(domains, DomainUsageDelta{
+		UserID:    "u1",
+		InboundID: "inb_1",
+		Domain:    "primary-only.com",
+		UpBytes:   500,
+		DownBytes: 500,
+		Bytes:     1000,
+	})
 	err := st.RecordStatsBatches([]QueuedStatsBatch{{
 		NodeUUID:   "node-1",
 		ReceivedAt: base.Add(-17 * time.Minute), // 10:10 bucket
@@ -93,11 +102,23 @@ func TestStatsConfigAndTieredTop20Compaction(t *testing.T) {
 	// Run compaction at base (10:27)
 	require.NoError(t, st.CompactAndPruneStats(base))
 
-	// Closed 5m bucket at 10:10 should be pruned strictly to Top-20
+	// Closed 5m bucket at 10:10 should be pruned strictly to Top-20 per inbound (20 for inb_1#home + 1 for inb_1)
 	var count5m int64
 	require.NoError(t, st.db.Model(&models.NodeUserDomainStat{}).
 		Where("granularity = ?", models.StatsGranularity5m).Count(&count5m).Error)
-	require.Equal(t, int64(20), count5m)
+	require.Equal(t, int64(21), count5m)
+
+	// Filtering 30m window by primary inbound inb_1 returns only primary-only.com
+	resPrimary, err := st.QueryDomainAnalysis(DomainQueryParams{Window: "30m", UserID: "u1", InboundID: "inb_1", TopN: 20})
+	require.NoError(t, err)
+	require.Len(t, resPrimary.Domains, 1)
+	require.Equal(t, "primary-only.com", resPrimary.Domains[0].Domain)
+
+	// Filtering 30m window by virtual inbound inb_1#home returns its independent Top-20
+	resVirtual, err := st.QueryDomainAnalysis(DomainQueryParams{Window: "30m", UserID: "u1", InboundID: "inb_1#home", TopN: 20})
+	require.NoError(t, err)
+	require.Len(t, resVirtual.Domains, 20)
+	require.Equal(t, "example25.com", resVirtual.Domains[0].Domain)
 
 	// 2h-old record should now live in 30m tier
 	var count30m int64

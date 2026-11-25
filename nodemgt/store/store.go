@@ -89,6 +89,11 @@ func (s *Store) Migrate() error {
 	if err := dropLegacySubscriptionTokenIndex(s.db); err != nil {
 		return err
 	}
+	if s.db.Migrator().HasTable(&models.NodeUserDomainStat{}) && !s.db.Migrator().HasColumn(&models.NodeUserDomainStat{}, "inbound_id") {
+		if err := s.db.Migrator().DropTable(&models.NodeUserDomainStat{}); err != nil {
+			return err
+		}
+	}
 	if err := s.db.AutoMigrate(models.All()...); err != nil {
 		return err
 	}

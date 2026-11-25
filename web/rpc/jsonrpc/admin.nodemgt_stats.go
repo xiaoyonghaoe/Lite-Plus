@@ -65,14 +65,16 @@ func nodemgtStatsConfigSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 
 func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var p struct {
-		Days           int    `json:"days"`
-		NodeUUID       string `json:"node_uuid"`
-		DomainNodeUUID string `json:"domain_node_uuid"`
-		UserID         string `json:"user_id"`
-		Window         string `json:"window"`
-		StartTS        int64  `json:"start_ts"`
-		EndTS          int64  `json:"end_ts"`
-		Search         string `json:"search"`
+		Days            int    `json:"days"`
+		NodeUUID        string `json:"node_uuid"`
+		DomainNodeUUID  string `json:"domain_node_uuid"`
+		InboundID       string `json:"inbound_id"`
+		DomainInboundID string `json:"domain_inbound_id"`
+		UserID          string `json:"user_id"`
+		Window          string `json:"window"`
+		StartTS         int64  `json:"start_ts"`
+		EndTS           int64  `json:"end_ts"`
+		Search          string `json:"search"`
 	}
 	_ = req.BindParams(&p)
 	if p.Days <= 0 {
@@ -91,14 +93,19 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if domNodeUUID == "" {
 		domNodeUUID = strings.TrimSpace(p.NodeUUID)
 	}
+	domInboundID := strings.TrimSpace(p.DomainInboundID)
+	if domInboundID == "" {
+		domInboundID = strings.TrimSpace(p.InboundID)
+	}
 	domRes, err := st.QueryDomainAnalysis(store.DomainQueryParams{
-		Window:   p.Window,
-		StartTS:  p.StartTS,
-		EndTS:    p.EndTS,
-		UserID:   p.UserID,
-		NodeUUID: domNodeUUID,
-		Search:   p.Search,
-		TopN:     20,
+		Window:    p.Window,
+		StartTS:   p.StartTS,
+		EndTS:     p.EndTS,
+		UserID:    p.UserID,
+		NodeUUID:  domNodeUUID,
+		InboundID: domInboundID,
+		Search:    p.Search,
+		TopN:      20,
 	})
 	if err != nil {
 		return nil, nodemgtErr(err)
@@ -175,6 +182,10 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 
 	inbOut := make([]map[string]any, 0, len(inbStats))
 	for _, row := range inbStats {
+		share := 0.0
+		if totalBytes > 0 {
+			share = float64(row.Total) * 100 / float64(totalBytes)
+		}
 		inbOut = append(inbOut, map[string]any{
 			"node_uuid":    row.NodeUUID,
 			"node_name":    nodeNames[row.NodeUUID],
@@ -183,6 +194,7 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 			"up_bytes":     row.UpBytes,
 			"down_bytes":   row.DownBytes,
 			"total_bytes":  row.Total,
+			"share_pct":    share,
 		})
 	}
 
@@ -215,6 +227,7 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		"total_down_bytes":       totalDown,
 		"total_bytes":            totalBytes,
 		"active_node_count":      len(nodeOut),
+		"active_inbound_count":   len(inbOut),
 		"nodes":                  nodeOut,
 		"inbounds":               inbOut,
 		"user_inbounds":          usrOut,

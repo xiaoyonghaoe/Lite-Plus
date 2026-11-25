@@ -99,9 +99,9 @@ func (s *Store) RecordStatsBatches(items []QueuedStatsBatch) error {
 		day, nodeUUID, inboundID, userID string
 	}
 	type domKey struct {
-		userID, nodeUUID string
-		bucketTS         int64
-		domain           string
+		userID, nodeUUID, inboundID string
+		bucketTS                    int64
+		domain                      string
 	}
 	type counters struct {
 		up, down, total int64
@@ -146,6 +146,7 @@ func (s *Store) RecordStatsBatches(items []QueuedStatsBatch) error {
 
 		for _, item := range q.Batch.DomainTop {
 			uid := strings.TrimSpace(item.UserID)
+			inbID := strings.TrimSpace(item.InboundID)
 			domain := strings.ToLower(strings.TrimSpace(item.Domain))
 			if uid == "" || domain == "" {
 				continue
@@ -164,7 +165,7 @@ func (s *Store) RecordStatsBatches(items []QueuedStatsBatch) error {
 			if total <= 0 {
 				continue
 			}
-			k := domKey{userID: uid, nodeUUID: nodeUUID, bucketTS: b5m, domain: domain}
+			k := domKey{userID: uid, nodeUUID: nodeUUID, inboundID: inbID, bucketTS: b5m, domain: domain}
 			c := domAgg[k]
 			if c == nil {
 				c = &counters{}
@@ -210,6 +211,7 @@ func (s *Store) RecordStatsBatches(items []QueuedStatsBatch) error {
 			row := models.NodeUserDomainStat{
 				UserID:      k.userID,
 				NodeUUID:    k.nodeUUID,
+				InboundID:   k.inboundID,
 				Granularity: models.StatsGranularity5m,
 				BucketTS:    k.bucketTS,
 				Domain:      k.domain,
@@ -222,6 +224,7 @@ func (s *Store) RecordStatsBatches(items []QueuedStatsBatch) error {
 				Columns: []clause.Column{
 					{Name: "user_id"},
 					{Name: "node_uuid"},
+					{Name: "inbound_id"},
 					{Name: "granularity"},
 					{Name: "bucket_ts"},
 					{Name: "domain"},
@@ -299,13 +302,13 @@ func rollupDomainTier(
 	}
 
 	type dstKey struct {
-		userID, nodeUUID string
-		bucketTS         int64
-		domain           string
+		userID, nodeUUID, inboundID string
+		bucketTS                    int64
+		domain                      string
 	}
 	type scopeKey struct {
-		userID, nodeUUID string
-		bucketTS         int64
+		userID, nodeUUID, inboundID string
+		bucketTS                    int64
 	}
 	type aggVal struct {
 		up, down, total int64
@@ -315,7 +318,7 @@ func rollupDomainTier(
 	touched := map[scopeKey]struct{}{}
 	for _, r := range oldRows {
 		dstTS := mapBucket(r.BucketTS)
-		k := dstKey{userID: r.UserID, nodeUUID: r.NodeUUID, bucketTS: dstTS, domain: r.Domain}
+		k := dstKey{userID: r.UserID, nodeUUID: r.NodeUUID, inboundID: r.InboundID, bucketTS: dstTS, domain: r.Domain}
 		v := merged[k]
 		if v == nil {
 			v = &aggVal{}
@@ -324,13 +327,14 @@ func rollupDomainTier(
 		v.up += r.UpBytes
 		v.down += r.DownBytes
 		v.total += r.Bytes
-		touched[scopeKey{userID: r.UserID, nodeUUID: r.NodeUUID, bucketTS: dstTS}] = struct{}{}
+		touched[scopeKey{userID: r.UserID, nodeUUID: r.NodeUUID, inboundID: r.InboundID, bucketTS: dstTS}] = struct{}{}
 	}
 
 	for k, v := range merged {
 		row := models.NodeUserDomainStat{
 			UserID:      k.userID,
 			NodeUUID:    k.nodeUUID,
+			InboundID:   k.inboundID,
 			Granularity: dstGran,
 			BucketTS:    k.bucketTS,
 			Domain:      k.domain,
@@ -343,6 +347,7 @@ func rollupDomainTier(
 			Columns: []clause.Column{
 				{Name: "user_id"},
 				{Name: "node_uuid"},
+				{Name: "inbound_id"},
 				{Name: "granularity"},
 				{Name: "bucket_ts"},
 				{Name: "domain"},
@@ -364,7 +369,7 @@ func rollupDomainTier(
 	}
 
 	for sc := range touched {
-		if err := pruneDomainScopeTopN(tx, sc.userID, sc.nodeUUID, dstGran, sc.bucketTS, defaultStatsTopN); err != nil {
+		if err := pruneDomainScopeTopN(tx, sc.userID, sc.nodeUUID, sc.inboundID, dstGran, sc.bucketTS, defaultStatsTopN); err != nil {
 			return err
 		}
 	}
@@ -373,30 +378,32 @@ func rollupDomainTier(
 
 func pruneDomainTierTopN(tx *gorm.DB, gran int, beforeTS int64, topN int) error {
 	type scopeRow struct {
-		UserID   string
-		NodeUUID string
-		BucketTS int64
+		UserID    string
+		NodeUUID  string
+		InboundID string
+		BucketTS  int64
 	}
 	var scopes []scopeRow
 	if err := tx.Model(&models.NodeUserDomainStat{}).
-		Select("user_id, node_uuid, bucket_ts").
+		Select("user_id, node_uuid, inbound_id, bucket_ts").
 		Where("granularity = ? AND bucket_ts < ?", gran, beforeTS).
-		Group("user_id, node_uuid, bucket_ts").
+		Group("user_id, node_uuid, inbound_id, bucket_ts").
 		Having("COUNT(*) > ?", topN).
 		Find(&scopes).Error; err != nil {
 		return err
 	}
 	for _, sc := range scopes {
-		if err := pruneDomainScopeTopN(tx, sc.UserID, sc.NodeUUID, gran, sc.BucketTS, topN); err != nil {
+		if err := pruneDomainScopeTopN(tx, sc.UserID, sc.NodeUUID, sc.InboundID, gran, sc.BucketTS, topN); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func pruneDomainScopeTopN(tx *gorm.DB, userID, nodeUUID string, gran int, bucketTS int64, topN int) error {
+func pruneDomainScopeTopN(tx *gorm.DB, userID, nodeUUID, inboundID string, gran int, bucketTS int64, topN int) error {
 	var rows []models.NodeUserDomainStat
-	if err := tx.Where("user_id = ? AND node_uuid = ? AND granularity = ? AND bucket_ts = ?", userID, nodeUUID, gran, bucketTS).
+	if err := tx.Where("user_id = ? AND node_uuid = ? AND inbound_id = ? AND granularity = ? AND bucket_ts = ?",
+		userID, nodeUUID, inboundID, gran, bucketTS).
 		Order("bytes DESC, domain ASC").
 		Find(&rows).Error; err != nil {
 		return err
@@ -408,7 +415,7 @@ func pruneDomainScopeTopN(tx *gorm.DB, userID, nodeUUID string, gran int, bucket
 	for _, r := range rows[topN:] {
 		drop = append(drop, r.Domain)
 	}
-	return tx.Where("user_id = ? AND node_uuid = ? AND granularity = ? AND bucket_ts = ? AND domain IN ?",
-		userID, nodeUUID, gran, bucketTS, drop).
+	return tx.Where("user_id = ? AND node_uuid = ? AND inbound_id = ? AND granularity = ? AND bucket_ts = ? AND domain IN ?",
+		userID, nodeUUID, inboundID, gran, bucketTS, drop).
 		Delete(&models.NodeUserDomainStat{}).Error
 }

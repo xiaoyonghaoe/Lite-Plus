@@ -404,6 +404,7 @@ const (
 type NodeUserDomainStat struct {
 	UserID      string    `json:"user_id" gorm:"type:varchar(36);primaryKey"`
 	NodeUUID    string    `json:"node_uuid" gorm:"type:varchar(36);primaryKey"`
+	InboundID   string    `json:"inbound_id" gorm:"type:varchar(80);primaryKey;default:''"`
 	Granularity int       `json:"granularity" gorm:"primaryKey;index:idx_user_domain_tier_ts,priority:1"`
 	BucketTS    int64     `json:"bucket_ts" gorm:"primaryKey;index:idx_user_domain_tier_ts,priority:2"`
 	Domain      string    `json:"domain" gorm:"type:varchar(191);primaryKey"`
