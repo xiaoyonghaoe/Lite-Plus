@@ -49,6 +49,19 @@ type Settings struct {
 	ShareStrategy      string   `json:"share_strategy,omitempty"`
 	FirewallAllowNodes []string `json:"firewall_allow_nodes,omitempty"`
 	VirtualTags        []string `json:"virtual_tags,omitempty"`
+	MaxConnsPerIP      *int     `json:"max_conns_per_ip,omitempty"`
+}
+
+const DefaultMaxConnsPerIP = 50
+
+func EffectiveMaxConnsPerIP(s Settings) int {
+	if s.MaxConnsPerIP == nil {
+		return DefaultMaxConnsPerIP
+	}
+	if *s.MaxConnsPerIP <= 0 {
+		return 0
+	}
+	return *s.MaxConnsPerIP
 }
 
 type ProxyAccount struct {
@@ -244,6 +257,17 @@ func InboundListensUDP(protocol string, s Settings) bool {
 		return EffectiveSSNetwork(s) != "tcp"
 	default:
 		return false
+	}
+}
+
+func InboundListensTCP(protocol string, s Settings) bool {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "hysteria2", "tuic":
+		return false
+	case "shadowsocks":
+		return EffectiveSSNetwork(s) != "udp"
+	default:
+		return true
 	}
 }
 

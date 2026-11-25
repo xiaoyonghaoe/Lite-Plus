@@ -2,6 +2,7 @@ package protection
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -105,6 +106,71 @@ func SaveConfig(uuid string, cfg v2.ProtectionConfig) (*models.ClientProtectionC
 		_ = protstore.MarkDelivery(uuid, protstore.DeliverySent, "", 0)
 	}
 	return row, nil
+}
+
+const inboundConnLimitPolicyPrefix = "inb-"
+
+// SyncInboundConnLimit upserts or removes the per-IP TCP concurrent connection
+// limit policy in the node's firewall dynamic protection config.
+func SyncInboundConnLimit(nodeUUID, inboundID, inboundName string, port int, enabled, listenTCP bool, maxConnsPerIP int) error {
+	nodeUUID = strings.TrimSpace(nodeUUID)
+	inboundID = strings.TrimSpace(inboundID)
+	if nodeUUID == "" || inboundID == "" {
+		return nil
+	}
+	row, err := protstore.EnsureConfig(nodeUUID)
+	if err != nil {
+		return err
+	}
+	cfg := protstore.ConfigFromRow(row)
+	policyID := inboundConnLimitPolicyPrefix + inboundID
+	wantActive := enabled && listenTCP && port > 0 && port <= 65535 && maxConnsPerIP > 0
+
+	idx := -1
+	for i, pol := range cfg.Policies {
+		if pol.ID == policyID {
+			idx = i
+			break
+		}
+	}
+
+	if !wantActive {
+		if idx < 0 {
+			return nil
+		}
+		cfg.Policies = append(cfg.Policies[:idx], cfg.Policies[idx+1:]...)
+		_, err := SaveConfig(nodeUUID, cfg)
+		return err
+	}
+
+	name := strings.TrimSpace(inboundName)
+	if name == "" {
+		name = fmt.Sprintf("入站 %d", port)
+	}
+	next := v2.ProtectionPolicy{
+		ID:        policyID,
+		Name:      "入站并发限制: " + name,
+		Enabled:   true,
+		Mode:      v2.ProtectionModeEnforce,
+		Protocol:  v2.FirewallProtoTCP,
+		Port:      strconv.Itoa(port),
+		ConnLimit: maxConnsPerIP,
+	}
+	if idx >= 0 {
+		cur := cfg.Policies[idx]
+		if cur.Name == next.Name && cur.Enabled == next.Enabled && cur.Mode == next.Mode &&
+			cur.Protocol == next.Protocol && cur.Port == next.Port && cur.ConnLimit == next.ConnLimit &&
+			cfg.Enabled && cfg.RuntimeEnabled {
+			return nil
+		}
+		cfg.Policies[idx] = next
+	} else {
+		cfg.Policies = append(cfg.Policies, next)
+	}
+	cfg.Enabled = true
+	cfg.RuntimeEnabled = true
+	_, err = SaveConfig(nodeUUID, cfg)
+	return err
 }
 
 func StartUpgrade(uuid string) (*models.ProtectionUpgradeOp, v2.ProtectionResultParams, bool, error) {

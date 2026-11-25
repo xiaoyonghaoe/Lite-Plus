@@ -28,6 +28,7 @@ import (
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
 	logger "github.com/nuomiiiii/lite/utils/log"
 	"github.com/nuomiiiii/lite/web/firewall"
+	"github.com/nuomiiiii/lite/web/protection"
 	"gorm.io/gorm"
 )
 
@@ -323,6 +324,7 @@ type inboundUpsertParams struct {
 	FirewallAllow      *bool                     `json:"firewall_allow"`
 	FirewallAllowNodes []string                  `json:"firewall_allow_nodes"`
 	VirtualTags        []string                  `json:"virtual_tags"`
+	MaxConnsPerIP      *int                      `json:"max_conns_per_ip"`
 	Grant              string                    `json:"grant"`
 	PageID             string                    `json:"page_id"`
 }
@@ -602,6 +604,22 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	} else if len(oldCfg.VirtualTags) > 0 {
 		cfg.VirtualTags = inboundcfg.NormalizeVirtualTags(oldCfg.VirtualTags)
 	}
+	if p.MaxConnsPerIP != nil {
+		v := *p.MaxConnsPerIP
+		if v < 0 {
+			v = 0
+		}
+		cfg.MaxConnsPerIP = &v
+	} else if existing != nil && oldCfg.MaxConnsPerIP != nil {
+		v := *oldCfg.MaxConnsPerIP
+		if v < 0 {
+			v = 0
+		}
+		cfg.MaxConnsPerIP = &v
+	} else {
+		v := inboundcfg.DefaultMaxConnsPerIP
+		cfg.MaxConnsPerIP = &v
+	}
 	enabled := true
 	if p.Enabled != nil {
 		enabled = *p.Enabled
@@ -650,6 +668,22 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 		if err := firewall.UnlinkInbound(row.NodeUUID, row.ID); err != nil {
 			return nil, nodemgtErr(err)
 		}
+	}
+	if existing != nil && existing.NodeUUID != "" && existing.NodeUUID != row.NodeUUID {
+		if err := protection.SyncInboundConnLimit(existing.NodeUUID, existing.ID, existing.Name, existing.Port, false, false, 0); err != nil {
+			logger.Warnf("nodemgt", "inbound protection cleanup failed: %v", err)
+		}
+	}
+	if err := protection.SyncInboundConnLimit(
+		row.NodeUUID,
+		row.ID,
+		row.Name,
+		row.Port,
+		row.Enabled,
+		inboundcfg.InboundListensTCP(row.Protocol, cfg),
+		inboundcfg.EffectiveMaxConnsPerIP(cfg),
+	); err != nil {
+		logger.Warnf("nodemgt", "inbound protection sync failed: %v", err)
 	}
 	chainNodes, syncErr := st.SyncChainsForLanding(row.ID)
 	if syncErr != nil {
@@ -720,6 +754,7 @@ func inboundViewWithLinked(row models.Inbound, fwLinked bool) map[string]any {
 		"firewall_linked":      fwLinked,
 		"firewall_allow_nodes": s.FirewallAllowNodes,
 		"virtual_tags":         inboundcfg.NormalizeVirtualTags(s.VirtualTags),
+		"max_conns_per_ip":     inboundcfg.EffectiveMaxConnsPerIP(s),
 	}
 	if strings.EqualFold(row.Protocol, "shadowsocks") {
 		view["ss_network"] = inboundcfg.EffectiveSSNetwork(s)
@@ -749,6 +784,9 @@ func nodemgtInboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 		if err := firewall.UnlinkInbound(row.NodeUUID, row.ID); err != nil {
 			return nil, nodemgtErr(err)
 		}
+	}
+	if err := protection.SyncInboundConnLimit(row.NodeUUID, row.ID, row.Name, row.Port, false, false, 0); err != nil {
+		logger.Warnf("nodemgt", "inbound protection delete sync failed: %v", err)
 	}
 	chainNodes, err := st.DetachInboundChains(p.ID)
 	if err != nil {
