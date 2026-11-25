@@ -37,6 +37,7 @@ const (
 	defaultCFKVMaxStaleMinutes    = 60
 	cfKVBulkChunkSize             = 1000
 	cfKVAutoSyncInterval          = 2 * time.Minute
+	cfKVTriggerDebounce           = 2 * time.Second
 )
 
 type CFKVConfig struct {
@@ -465,25 +466,84 @@ func syncCFKVWithClient(st *store.Store, cfg CFKVConfig, kv cfKVClient, force bo
 	return result, nil
 }
 
-var cfKVLoopOnce sync.Once
+var (
+	cfKVLoopOnce  sync.Once
+	cfKVTriggerCh = make(chan struct{}, 1)
+)
+
+// TriggerCFKVSync requests an asynchronous, debounced Cloudflare KV sync.
+// It never blocks the caller and coalesces bursts of edits (e.g. user create +
+// subscription create) into a single KV sync pass.
+func TriggerCFKVSync() {
+	select {
+	case cfKVTriggerCh <- struct{}{}:
+	default:
+	}
+}
+
+func runCFKVAutoSyncPass() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Errorf("nodemgt", "cf kv auto sync panic: %v", rec)
+		}
+	}()
+	db := dbcore.GetDBInstance()
+	if db == nil {
+		return
+	}
+	st := store.New(db)
+	cfg := LoadCFKVConfig(st)
+	if !cfg.Enabled || cfg.AccountID == "" || cfg.NamespaceID == "" || cfg.APIToken == "" {
+		return
+	}
+	if _, err := SyncCFKV(st, false); err != nil {
+		logger.Warnf("nodemgt", "cf kv auto sync failed: %v", err)
+	}
+}
 
 func StartCFKVSyncLoop() {
 	cfKVLoopOnce.Do(func() {
 		go func() {
 			ticker := time.NewTicker(cfKVAutoSyncInterval)
 			defer ticker.Stop()
-			for range ticker.C {
-				db := dbcore.GetDBInstance()
-				if db == nil {
-					continue
+
+			var debounceTimer *time.Timer
+			var debounceC <-chan time.Time
+			stopDebounce := func() {
+				if debounceTimer != nil {
+					if !debounceTimer.Stop() {
+						select {
+						case <-debounceTimer.C:
+						default:
+						}
+					}
+					debounceTimer = nil
+					debounceC = nil
 				}
-				st := store.New(db)
-				cfg := LoadCFKVConfig(st)
-				if !cfg.Enabled || cfg.AccountID == "" || cfg.NamespaceID == "" || cfg.APIToken == "" {
-					continue
-				}
-				if _, err := SyncCFKV(st, false); err != nil {
-					logger.Warnf("nodemgt", "cf kv auto sync failed: %v", err)
+			}
+
+			for {
+				select {
+				case <-ticker.C:
+					stopDebounce()
+					runCFKVAutoSyncPass()
+				case <-cfKVTriggerCh:
+					if debounceTimer == nil {
+						debounceTimer = time.NewTimer(cfKVTriggerDebounce)
+						debounceC = debounceTimer.C
+					} else {
+						if !debounceTimer.Stop() {
+							select {
+							case <-debounceTimer.C:
+							default:
+							}
+						}
+						debounceTimer.Reset(cfKVTriggerDebounce)
+					}
+				case <-debounceC:
+					debounceTimer = nil
+					debounceC = nil
+					runCFKVAutoSyncPass()
 				}
 			}
 		}()

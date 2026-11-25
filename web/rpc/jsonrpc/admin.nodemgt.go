@@ -155,6 +155,7 @@ func nodemgtPush(st *store.Store, nodeUUID string) {
 }
 
 func nodemgtPushNodes(_ *store.Store, nodeUUIDs ...string) {
+	subhttp.TriggerCFKVSync()
 	seen := map[string]struct{}{}
 	ids := make([]string, 0, len(nodeUUIDs))
 	for _, id := range nodeUUIDs {
@@ -2102,6 +2103,7 @@ func nodemgtSubUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 	if err := st.UpsertSubscription(&row); err != nil {
 		return nil, nodemgtErr(err)
 	}
+	subhttp.TriggerCFKVSync()
 	_ = nodemgtAudit(ctx, st, "nodemgt.subscription.upsert", row.ID, nodemgtUserLabel(st, row.UserID))
 	return row, nil
 }
@@ -2126,6 +2128,7 @@ func nodemgtSubDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 	if err := st.DeleteSubscription(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
+	subhttp.TriggerCFKVSync()
 	_ = nodemgtAudit(ctx, st, "nodemgt.subscription.delete", p.ID, name)
 	return map[string]any{"ok": true}, nil
 }
@@ -2576,6 +2579,7 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		}
 	}
 	if len(changed) > 0 {
+		subhttp.TriggerCFKVSync()
 		_ = nodemgtAudit(ctx, st, "nodemgt.settings.set", "nodemgt", strings.Join(changed, ","), map[string]string{"settings": strings.Join(changed, ",")})
 	}
 	return nodemgtSettingsGet(ctx, req)
