@@ -143,10 +143,11 @@ func handleV2RPCWithPresence(uuid string, req v2.Request, _ bool, markPresence b
 			return v2.Error(req.ID, -32000, "failed to save report", err.Error())
 		}
 		return v2.Success(req.ID, gin.H{
-			"status":           "success",
-			"events":           events,
-			"next_interval_ms": nextInterval.Milliseconds(),
-			"has_more":         hasMore,
+			"status":            "success",
+			"events":            events,
+			"next_interval_ms":  nextInterval.Milliseconds(),
+			"stats_interval_ms": agent_runtime.ComputeNextStatsInterval().Milliseconds(),
+			"has_more":          hasMore,
 		})
 	case v2.MethodAgentBasicInfo:
 		var params v2.BasicInfoParams
@@ -270,7 +271,7 @@ func handleV2RPCWithPresence(uuid string, req v2.Request, _ bool, markPresence b
 		if err := bindV2Params(req.Params, &params); err != nil {
 			return v2.Error(req.ID, -32602, "invalid nodemgt stats", err.Error())
 		}
-		if err := store.New(dbcore.GetDBInstance()).RecordStatsBatch(uuid, params); err != nil {
+		if err := store.EnqueueStatsBatch(dbcore.GetDBInstance(), uuid, params); err != nil {
 			return v2.Error(req.ID, -32000, "failed to record nodemgt stats", err.Error())
 		}
 		return v2.Success(req.ID, gin.H{"status": "success"})

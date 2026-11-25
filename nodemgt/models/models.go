@@ -395,6 +395,26 @@ type NodeDomainStatDaily struct {
 
 func (NodeDomainStatDaily) TableName() string { return "nodemgt_domain_stats_daily" }
 
+const (
+	StatsGranularity5m  = 300
+	StatsGranularity30m = 1800
+	StatsGranularity1d  = 86400
+)
+
+type NodeUserDomainStat struct {
+	UserID      string    `json:"user_id" gorm:"type:varchar(36);primaryKey"`
+	NodeUUID    string    `json:"node_uuid" gorm:"type:varchar(36);primaryKey"`
+	Granularity int       `json:"granularity" gorm:"primaryKey;index:idx_user_domain_tier_ts,priority:1"`
+	BucketTS    int64     `json:"bucket_ts" gorm:"primaryKey;index:idx_user_domain_tier_ts,priority:2"`
+	Domain      string    `json:"domain" gorm:"type:varchar(191);primaryKey"`
+	UpBytes     int64     `json:"up_bytes" gorm:"not null;default:0"`
+	DownBytes   int64     `json:"down_bytes" gorm:"not null;default:0"`
+	Bytes       int64     `json:"bytes" gorm:"not null;default:0"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (NodeUserDomainStat) TableName() string { return "nodemgt_user_domain_stats" }
+
 func All() []any {
 	return []any{
 		&Inbound{},
@@ -422,5 +442,6 @@ func All() []any {
 		&UserIP{},
 		&NodeInboundStatDaily{},
 		&NodeDomainStatDaily{},
+		&NodeUserDomainStat{},
 	}
 }

@@ -1,7 +1,6 @@
 package store
 
 import (
-	"sort"
 	"strings"
 	"time"
 
@@ -12,9 +11,14 @@ import (
 
 const (
 	SettingStatsEnabledKey = "traffic_stats_enabled"
-	defaultStatsTopN       = 15
-	defaultStatsRetention  = 30
+	defaultStatsTopN       = 20
+	defaultStatsRetention  = 7
+
+	stats5mRetentionSec  = 30 * 60
+	stats30mRetentionSec = 24 * 3600
 )
+
+var statsNow = func() time.Time { return now() }
 
 type InboundUsageDelta struct {
 	InboundID string `json:"inbound_id"`
@@ -24,8 +28,11 @@ type InboundUsageDelta struct {
 }
 
 type DomainUsageDelta struct {
-	InboundID string `json:"inbound_id"`
+	UserID    string `json:"user_id"`
+	InboundID string `json:"inbound_id,omitempty"`
 	Domain    string `json:"domain"`
+	UpBytes   int64  `json:"up_bytes"`
+	DownBytes int64  `json:"down_bytes"`
 	Bytes     int64  `json:"bytes"`
 }
 
@@ -34,28 +41,10 @@ type StatsBatch struct {
 	DomainTop    []DomainUsageDelta  `json:"domain_top"`
 }
 
-type InboundStatSummary struct {
-	NodeUUID  string `json:"node_uuid"`
-	InboundID string `json:"inbound_id"`
-	UpBytes   int64  `json:"up_bytes"`
-	DownBytes int64  `json:"down_bytes"`
-	Total     int64  `json:"total_bytes"`
-}
-
-type UserInboundStatSummary struct {
-	NodeUUID  string `json:"node_uuid"`
-	InboundID string `json:"inbound_id"`
-	UserID    string `json:"user_id"`
-	UpBytes   int64  `json:"up_bytes"`
-	DownBytes int64  `json:"down_bytes"`
-	Total     int64  `json:"total_bytes"`
-}
-
-type DomainStatSummary struct {
-	NodeUUID  string `json:"node_uuid"`
-	InboundID string `json:"inbound_id"`
-	Domain    string `json:"domain"`
-	Bytes     int64  `json:"bytes"`
+type QueuedStatsBatch struct {
+	NodeUUID   string
+	Batch      StatsBatch
+	ReceivedAt time.Time
 }
 
 func (s *Store) StatsEnabled() bool {
@@ -75,229 +64,351 @@ func (s *Store) SetStatsEnabled(enabled bool) error {
 	return s.SetSetting(SettingStatsEnabledKey, val)
 }
 
-func statsDayUTC(t time.Time) string {
-	return t.UTC().Format("2006-01-02")
+func statsDayLocal(t time.Time) string {
+	return t.In(time.Local).Format("2006-01-02")
+}
+
+func dayBucketStartLocal(t time.Time) int64 {
+	lt := t.In(time.Local)
+	return time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, time.Local).Unix()
+}
+
+func bucketFloor(ts int64, gran int64) int64 {
+	if gran <= 0 {
+		return ts
+	}
+	if ts >= 0 {
+		return (ts / gran) * gran
+	}
+	return ((ts - gran + 1) / gran) * gran
 }
 
 func (s *Store) RecordStatsBatch(nodeUUID string, batch StatsBatch) error {
-	nodeUUID = strings.TrimSpace(nodeUUID)
-	if nodeUUID == "" {
-		return nil
-	}
-	if len(batch.InboundUsage) == 0 && len(batch.DomainTop) == 0 {
-		return nil
-	}
-	ts := now().UTC()
-	day := statsDayUTC(ts)
+	return s.RecordStatsBatches([]QueuedStatsBatch{{
+		NodeUUID:   nodeUUID,
+		Batch:      batch,
+		ReceivedAt: statsNow(),
+	}})
+}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		for _, item := range batch.InboundUsage {
+func (s *Store) RecordStatsBatches(items []QueuedStatsBatch) error {
+	if len(items) == 0 {
+		return nil
+	}
+	type inbKey struct {
+		day, nodeUUID, inboundID, userID string
+	}
+	type domKey struct {
+		userID, nodeUUID string
+		bucketTS         int64
+		domain           string
+	}
+	type counters struct {
+		up, down, total int64
+		updatedAt       time.Time
+	}
+
+	inbAgg := map[inbKey]*counters{}
+	domAgg := map[domKey]*counters{}
+
+	for _, q := range items {
+		nodeUUID := strings.TrimSpace(q.NodeUUID)
+		if nodeUUID == "" {
+			continue
+		}
+		ts := q.ReceivedAt
+		if ts.IsZero() {
+			ts = statsNow()
+		}
+		day := statsDayLocal(ts)
+		b5m := bucketFloor(ts.Unix(), models.StatsGranularity5m)
+
+		for _, item := range q.Batch.InboundUsage {
 			inbID := strings.TrimSpace(item.InboundID)
 			uid := strings.TrimSpace(item.UserID)
-			if inbID == "" || (item.UpBytes <= 0 && item.DownBytes <= 0) {
+			up := max(item.UpBytes, 0)
+			down := max(item.DownBytes, 0)
+			if inbID == "" || (up == 0 && down == 0) {
 				continue
 			}
-			up := item.UpBytes
-			if up < 0 {
-				up = 0
+			k := inbKey{day: day, nodeUUID: nodeUUID, inboundID: inbID, userID: uid}
+			c := inbAgg[k]
+			if c == nil {
+				c = &counters{}
+				inbAgg[k] = c
 			}
-			down := item.DownBytes
-			if down < 0 {
-				down = 0
-			}
-			row := models.NodeInboundStatDaily{
-				Day:       day,
-				NodeUUID:  nodeUUID,
-				InboundID: inbID,
-				UserID:    uid,
-				UpBytes:   up,
-				DownBytes: down,
-				UpdatedAt: ts,
-			}
-			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "day"}, {Name: "node_uuid"}, {Name: "inbound_id"}, {Name: "user_id"}},
-				DoUpdates: clause.Assignments(map[string]any{
-					"up_bytes":   gorm.Expr("up_bytes + ?", up),
-					"down_bytes": gorm.Expr("down_bytes + ?", down),
-					"updated_at": ts,
-				}),
-			}).Create(&row).Error; err != nil {
-				return err
+			c.up += up
+			c.down += down
+			if ts.After(c.updatedAt) {
+				c.updatedAt = ts
 			}
 		}
 
-		touchedInbounds := map[string]struct{}{}
-		for _, item := range batch.DomainTop {
-			inbID := strings.TrimSpace(item.InboundID)
+		for _, item := range q.Batch.DomainTop {
+			uid := strings.TrimSpace(item.UserID)
 			domain := strings.ToLower(strings.TrimSpace(item.Domain))
-			if inbID == "" || domain == "" || item.Bytes <= 0 {
+			if uid == "" || domain == "" {
 				continue
 			}
 			if len(domain) > 191 {
 				domain = domain[:191]
 			}
-			row := models.NodeDomainStatDaily{
-				Day:       day,
-				NodeUUID:  nodeUUID,
-				InboundID: inbID,
-				Domain:    domain,
-				Bytes:     item.Bytes,
-				UpdatedAt: ts,
+			up := max(item.UpBytes, 0)
+			down := max(item.DownBytes, 0)
+			total := item.Bytes
+			if total <= 0 {
+				total = up + down
+			} else if up == 0 && down == 0 {
+				down = total
+			}
+			if total <= 0 {
+				continue
+			}
+			k := domKey{userID: uid, nodeUUID: nodeUUID, bucketTS: b5m, domain: domain}
+			c := domAgg[k]
+			if c == nil {
+				c = &counters{}
+				domAgg[k] = c
+			}
+			c.up += up
+			c.down += down
+			c.total += total
+			if ts.After(c.updatedAt) {
+				c.updatedAt = ts
+			}
+		}
+	}
+
+	if len(inbAgg) == 0 && len(domAgg) == 0 {
+		return nil
+	}
+
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		for k, c := range inbAgg {
+			row := models.NodeInboundStatDaily{
+				Day:       k.day,
+				NodeUUID:  k.nodeUUID,
+				InboundID: k.inboundID,
+				UserID:    k.userID,
+				UpBytes:   c.up,
+				DownBytes: c.down,
+				UpdatedAt: c.updatedAt.UTC(),
 			}
 			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "day"}, {Name: "node_uuid"}, {Name: "inbound_id"}, {Name: "domain"}},
+				Columns: []clause.Column{{Name: "day"}, {Name: "node_uuid"}, {Name: "inbound_id"}, {Name: "user_id"}},
 				DoUpdates: clause.Assignments(map[string]any{
-					"bytes":      gorm.Expr("bytes + ?", item.Bytes),
-					"updated_at": ts,
+					"up_bytes":   gorm.Expr("up_bytes + ?", c.up),
+					"down_bytes": gorm.Expr("down_bytes + ?", c.down),
+					"updated_at": c.updatedAt.UTC(),
 				}),
 			}).Create(&row).Error; err != nil {
 				return err
 			}
-			touchedInbounds[inbID] = struct{}{}
 		}
 
-		// Keep at most Top-15 domains per (day, node_uuid, inbound_id) to bound SQLite size.
-		for inbID := range touchedInbounds {
-			var rows []models.NodeDomainStatDaily
-			if err := tx.Where("day = ? AND node_uuid = ? AND inbound_id = ?", day, nodeUUID, inbID).
-				Order("bytes DESC, domain ASC").Find(&rows).Error; err != nil {
+		for k, c := range domAgg {
+			row := models.NodeUserDomainStat{
+				UserID:      k.userID,
+				NodeUUID:    k.nodeUUID,
+				Granularity: models.StatsGranularity5m,
+				BucketTS:    k.bucketTS,
+				Domain:      k.domain,
+				UpBytes:     c.up,
+				DownBytes:   c.down,
+				Bytes:       c.total,
+				UpdatedAt:   c.updatedAt.UTC(),
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "user_id"},
+					{Name: "node_uuid"},
+					{Name: "granularity"},
+					{Name: "bucket_ts"},
+					{Name: "domain"},
+				},
+				DoUpdates: clause.Assignments(map[string]any{
+					"up_bytes":   gorm.Expr("up_bytes + ?", c.up),
+					"down_bytes": gorm.Expr("down_bytes + ?", c.down),
+					"bytes":      gorm.Expr("bytes + ?", c.total),
+					"updated_at": c.updatedAt.UTC(),
+				}),
+			}).Create(&row).Error; err != nil {
 				return err
 			}
-			if len(rows) > defaultStatsTopN {
-				dropDomains := make([]string, 0, len(rows)-defaultStatsTopN)
-				for _, r := range rows[defaultStatsTopN:] {
-					dropDomains = append(dropDomains, r.Domain)
-				}
-				if err := tx.Where("day = ? AND node_uuid = ? AND inbound_id = ? AND domain IN ?", day, nodeUUID, inbID, dropDomains).
-					Delete(&models.NodeDomainStatDaily{}).Error; err != nil {
-					return err
-				}
-			}
 		}
-
-		// Opportunistic retention prune (keep last 30 days).
-		cutoff := statsDayUTC(ts.AddDate(0, 0, -defaultStatsRetention))
-		_ = tx.Where("day < ?", cutoff).Delete(&models.NodeInboundStatDaily{}).Error
-		_ = tx.Where("day < ?", cutoff).Delete(&models.NodeDomainStatDaily{}).Error
 		return nil
 	})
 }
 
-func (s *Store) QueryInboundStats(days int, nodeUUID, userID string) ([]InboundStatSummary, []UserInboundStatSummary, error) {
-	if days <= 0 {
-		days = 7
+// CompactAndPruneStats enforces multi-tier retention and Top-20 caps:
+//   - 5m buckets older than 30m roll up into 30m buckets (Top-20 per user+node+bucket).
+//   - Closed 5m buckets are pruned to Top-20 per user+node+bucket.
+//   - 30m buckets older than 24h roll up into local 1d buckets (Top-20 per user+node+bucket).
+//   - 1d domain buckets and inbound daily rows older than 7 days are deleted.
+func (s *Store) CompactAndPruneStats(at time.Time) error {
+	if at.IsZero() {
+		at = statsNow()
 	}
-	if days > 90 {
-		days = 90
-	}
-	since := statsDayUTC(now().UTC().AddDate(0, 0, -(days - 1)))
-	q := s.db.Model(&models.NodeInboundStatDaily{}).Where("day >= ?", since)
-	if nodeUUID = strings.TrimSpace(nodeUUID); nodeUUID != "" {
-		q = q.Where("node_uuid = ?", nodeUUID)
-	}
-	if userID = strings.TrimSpace(userID); userID != "" {
-		q = q.Where("user_id = ?", userID)
-	}
-	var rows []models.NodeInboundStatDaily
-	if err := q.Find(&rows).Error; err != nil {
-		return nil, nil, err
-	}
+	cur5m := bucketFloor(at.Unix(), models.StatsGranularity5m)
+	cutoff5m := cur5m - stats5mRetentionSec
+	cur30m := bucketFloor(at.Unix(), models.StatsGranularity30m)
+	cutoff30m := cur30m - stats30mRetentionSec
+	cutoff1dTS := dayBucketStartLocal(at.In(time.Local).AddDate(0, 0, -(defaultStatsRetention - 1)))
+	cutoffDay := statsDayLocal(at.In(time.Local).AddDate(0, 0, -(defaultStatsRetention - 1)))
 
-	type inbKey struct{ node, inb string }
-	type usrKey struct{ node, inb, user string }
-	inbMap := map[inbKey]*InboundStatSummary{}
-	usrMap := map[usrKey]*UserInboundStatSummary{}
-	for _, r := range rows {
-		ik := inbKey{node: r.NodeUUID, inb: r.InboundID}
-		is, ok := inbMap[ik]
-		if !ok {
-			is = &InboundStatSummary{NodeUUID: r.NodeUUID, InboundID: r.InboundID}
-			inbMap[ik] = is
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := rollupDomainTier(tx, models.StatsGranularity5m, cutoff5m, models.StatsGranularity30m, func(ts int64) int64 {
+			return bucketFloor(ts, models.StatsGranularity30m)
+		}, at.UTC()); err != nil {
+			return err
 		}
-		is.UpBytes += r.UpBytes
-		is.DownBytes += r.DownBytes
-		is.Total += r.UpBytes + r.DownBytes
-
-		uk := usrKey{node: r.NodeUUID, inb: r.InboundID, user: r.UserID}
-		us, ok := usrMap[uk]
-		if !ok {
-			us = &UserInboundStatSummary{NodeUUID: r.NodeUUID, InboundID: r.InboundID, UserID: r.UserID}
-			usrMap[uk] = us
+		if err := pruneDomainTierTopN(tx, models.StatsGranularity5m, cur5m, defaultStatsTopN); err != nil {
+			return err
 		}
-		us.UpBytes += r.UpBytes
-		us.DownBytes += r.DownBytes
-		us.Total += r.UpBytes + r.DownBytes
-	}
-
-	inbList := make([]InboundStatSummary, 0, len(inbMap))
-	for _, v := range inbMap {
-		inbList = append(inbList, *v)
-	}
-	sort.Slice(inbList, func(i, j int) bool {
-		if inbList[i].Total != inbList[j].Total {
-			return inbList[i].Total > inbList[j].Total
+		if err := rollupDomainTier(tx, models.StatsGranularity30m, cutoff30m, models.StatsGranularity1d, func(ts int64) int64 {
+			return dayBucketStartLocal(time.Unix(ts, 0))
+		}, at.UTC()); err != nil {
+			return err
 		}
-		return inbList[i].InboundID < inbList[j].InboundID
+		if err := tx.Where("granularity = ? AND bucket_ts < ?", models.StatsGranularity1d, cutoff1dTS).
+			Delete(&models.NodeUserDomainStat{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("day < ?", cutoffDay).Delete(&models.NodeInboundStatDaily{}).Error; err != nil {
+			return err
+		}
+		_ = tx.Where("day < ?", cutoffDay).Delete(&models.NodeDomainStatDaily{}).Error
+		return nil
 	})
-
-	usrList := make([]UserInboundStatSummary, 0, len(usrMap))
-	for _, v := range usrMap {
-		usrList = append(usrList, *v)
-	}
-	sort.Slice(usrList, func(i, j int) bool {
-		if usrList[i].Total != usrList[j].Total {
-			return usrList[i].Total > usrList[j].Total
-		}
-		return usrList[i].UserID < usrList[j].UserID
-	})
-	return inbList, usrList, nil
 }
 
-func (s *Store) QueryTopDomains(days int, nodeUUID, inboundID string, limit int) ([]DomainStatSummary, error) {
-	if days <= 0 {
-		days = 7
+func rollupDomainTier(
+	tx *gorm.DB,
+	srcGran int,
+	cutoffTS int64,
+	dstGran int,
+	mapBucket func(int64) int64,
+	updatedAt time.Time,
+) error {
+	var oldRows []models.NodeUserDomainStat
+	if err := tx.Where("granularity = ? AND bucket_ts < ?", srcGran, cutoffTS).Find(&oldRows).Error; err != nil {
+		return err
 	}
-	if days > 90 {
-		days = 90
+	if len(oldRows) == 0 {
+		return nil
 	}
-	if limit <= 0 || limit > defaultStatsTopN {
-		limit = defaultStatsTopN
+
+	type dstKey struct {
+		userID, nodeUUID string
+		bucketTS         int64
+		domain           string
 	}
-	since := statsDayUTC(now().UTC().AddDate(0, 0, -(days - 1)))
-	q := s.db.Model(&models.NodeDomainStatDaily{}).Where("day >= ?", since)
-	if nodeUUID = strings.TrimSpace(nodeUUID); nodeUUID != "" {
-		q = q.Where("node_uuid = ?", nodeUUID)
+	type scopeKey struct {
+		userID, nodeUUID string
+		bucketTS         int64
 	}
-	if inboundID = strings.TrimSpace(inboundID); inboundID != "" {
-		q = q.Where("inbound_id = ?", inboundID)
+	type aggVal struct {
+		up, down, total int64
 	}
-	var rows []models.NodeDomainStatDaily
-	if err := q.Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	type domKey struct{ node, inb, domain string }
-	agg := map[domKey]*DomainStatSummary{}
-	for _, r := range rows {
-		k := domKey{node: r.NodeUUID, inb: r.InboundID, domain: r.Domain}
-		item, ok := agg[k]
-		if !ok {
-			item = &DomainStatSummary{NodeUUID: r.NodeUUID, InboundID: r.InboundID, Domain: r.Domain}
-			agg[k] = item
+
+	merged := map[dstKey]*aggVal{}
+	touched := map[scopeKey]struct{}{}
+	for _, r := range oldRows {
+		dstTS := mapBucket(r.BucketTS)
+		k := dstKey{userID: r.UserID, nodeUUID: r.NodeUUID, bucketTS: dstTS, domain: r.Domain}
+		v := merged[k]
+		if v == nil {
+			v = &aggVal{}
+			merged[k] = v
 		}
-		item.Bytes += r.Bytes
+		v.up += r.UpBytes
+		v.down += r.DownBytes
+		v.total += r.Bytes
+		touched[scopeKey{userID: r.UserID, nodeUUID: r.NodeUUID, bucketTS: dstTS}] = struct{}{}
 	}
-	out := make([]DomainStatSummary, 0, len(agg))
-	for _, v := range agg {
-		out = append(out, *v)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Bytes != out[j].Bytes {
-			return out[i].Bytes > out[j].Bytes
+
+	for k, v := range merged {
+		row := models.NodeUserDomainStat{
+			UserID:      k.userID,
+			NodeUUID:    k.nodeUUID,
+			Granularity: dstGran,
+			BucketTS:    k.bucketTS,
+			Domain:      k.domain,
+			UpBytes:     v.up,
+			DownBytes:   v.down,
+			Bytes:       v.total,
+			UpdatedAt:   updatedAt,
 		}
-		return out[i].Domain < out[j].Domain
-	})
-	if len(out) > limit {
-		out = out[:limit]
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "user_id"},
+				{Name: "node_uuid"},
+				{Name: "granularity"},
+				{Name: "bucket_ts"},
+				{Name: "domain"},
+			},
+			DoUpdates: clause.Assignments(map[string]any{
+				"up_bytes":   gorm.Expr("up_bytes + ?", v.up),
+				"down_bytes": gorm.Expr("down_bytes + ?", v.down),
+				"bytes":      gorm.Expr("bytes + ?", v.total),
+				"updated_at": updatedAt,
+			}),
+		}).Create(&row).Error; err != nil {
+			return err
+		}
 	}
-	return out, nil
+
+	if err := tx.Where("granularity = ? AND bucket_ts < ?", srcGran, cutoffTS).
+		Delete(&models.NodeUserDomainStat{}).Error; err != nil {
+		return err
+	}
+
+	for sc := range touched {
+		if err := pruneDomainScopeTopN(tx, sc.userID, sc.nodeUUID, dstGran, sc.bucketTS, defaultStatsTopN); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pruneDomainTierTopN(tx *gorm.DB, gran int, beforeTS int64, topN int) error {
+	type scopeRow struct {
+		UserID   string
+		NodeUUID string
+		BucketTS int64
+	}
+	var scopes []scopeRow
+	if err := tx.Model(&models.NodeUserDomainStat{}).
+		Select("user_id, node_uuid, bucket_ts").
+		Where("granularity = ? AND bucket_ts < ?", gran, beforeTS).
+		Group("user_id, node_uuid, bucket_ts").
+		Having("COUNT(*) > ?", topN).
+		Find(&scopes).Error; err != nil {
+		return err
+	}
+	for _, sc := range scopes {
+		if err := pruneDomainScopeTopN(tx, sc.UserID, sc.NodeUUID, gran, sc.BucketTS, topN); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pruneDomainScopeTopN(tx *gorm.DB, userID, nodeUUID string, gran int, bucketTS int64, topN int) error {
+	var rows []models.NodeUserDomainStat
+	if err := tx.Where("user_id = ? AND node_uuid = ? AND granularity = ? AND bucket_ts = ?", userID, nodeUUID, gran, bucketTS).
+		Order("bytes DESC, domain ASC").
+		Find(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) <= topN {
+		return nil
+	}
+	drop := make([]string, 0, len(rows)-topN)
+	for _, r := range rows[topN:] {
+		drop = append(drop, r.Domain)
+	}
+	return tx.Where("user_id = ? AND node_uuid = ? AND granularity = ? AND bucket_ts = ? AND domain IN ?",
+		userID, nodeUUID, gran, bucketTS, drop).
+		Delete(&models.NodeUserDomainStat{}).Error
 }

@@ -19,6 +19,8 @@ const (
 	minAdminActiveWindow     = 10 * time.Second
 	maxAdminActiveWindow     = 30 * time.Minute
 	minDynamicPresenceTTL    = 35 * time.Second
+	defaultStatsFastInterval = 15 * time.Second
+	defaultStatsIdleInterval = 60 * time.Second
 )
 
 var (
@@ -116,6 +118,15 @@ func ComputeNextReportInterval(configuredIntervalSec float64, hasPendingEvents b
 		idle = fast
 	}
 	return idle
+}
+
+// ComputeNextStatsInterval calculates the adaptive reporting interval for nodemgt traffic stats:
+// 15s when an admin is active, 60s when idle.
+func ComputeNextStatsInterval() time.Duration {
+	if IsAdminActive() {
+		return defaultStatsFastInterval
+	}
+	return defaultStatsIdleInterval
 }
 
 // PresenceTTLForInterval computes a safe presence expiration window for a given reporting interval,

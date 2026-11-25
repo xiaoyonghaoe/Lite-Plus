@@ -3,22 +3,25 @@ package jsonrpc
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/nuomiiiii/lite/database/clients"
 	"github.com/nuomiiiii/lite/nodemgt/inboundcfg"
+	"github.com/nuomiiiii/lite/nodemgt/store"
 	"github.com/nuomiiiii/lite/pkg/rpc"
 )
 
 func init() {
 	reg("nodemgt.stats.config.get", nodemgtStatsConfigGet, "Get nodemgt traffic stats toggle")
 	reg("nodemgt.stats.config.set", nodemgtStatsConfigSet, "Enable or disable nodemgt traffic stats")
-	reg("nodemgt.stats.summary", nodemgtStatsSummary, "Query inbound and top-15 domain traffic stats")
+	reg("nodemgt.stats.summary", nodemgtStatsSummary, "Query user node usage and multi-tier top-20 domain traffic stats")
 }
 
 func nodemgtStatsConfigGet(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	return map[string]any{
-		"enabled": nodemgtST().StatsEnabled(),
-		"top_n":   15,
+		"enabled":        nodemgtST().StatsEnabled(),
+		"top_n":          20,
+		"retention_days": 7,
 	}, nil
 }
 
@@ -54,28 +57,49 @@ func nodemgtStatsConfigSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 		nodemgtPushNodes(st, nodes...)
 	}
 	return map[string]any{
-		"enabled": p.Enabled,
-		"top_n":   15,
+		"enabled":        p.Enabled,
+		"top_n":          20,
+		"retention_days": 7,
 	}, nil
 }
 
 func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var p struct {
-		Days      int    `json:"days"`
-		NodeUUID  string `json:"node_uuid"`
-		InboundID string `json:"inbound_id"`
-		UserID    string `json:"user_id"`
+		Days           int    `json:"days"`
+		NodeUUID       string `json:"node_uuid"`
+		DomainNodeUUID string `json:"domain_node_uuid"`
+		UserID         string `json:"user_id"`
+		Window         string `json:"window"`
+		StartTS        int64  `json:"start_ts"`
+		EndTS          int64  `json:"end_ts"`
+		Search         string `json:"search"`
 	}
 	_ = req.BindParams(&p)
 	if p.Days <= 0 {
 		p.Days = 7
 	}
+	if p.Days > 7 {
+		p.Days = 7
+	}
 	st := nodemgtST()
-	inbStats, usrInbStats, err := st.QueryInboundStats(p.Days, p.NodeUUID, p.UserID)
+	nodeStats, inbStats, usrInbStats, startDay, endDay, err := st.QueryNodeAndInboundStats(p.Days, p.NodeUUID, p.UserID)
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	domains, err := st.QueryTopDomains(p.Days, p.NodeUUID, p.InboundID, 15)
+
+	domNodeUUID := strings.TrimSpace(p.DomainNodeUUID)
+	if domNodeUUID == "" {
+		domNodeUUID = strings.TrimSpace(p.NodeUUID)
+	}
+	domRes, err := st.QueryDomainAnalysis(store.DomainQueryParams{
+		Window:   p.Window,
+		StartTS:  p.StartTS,
+		EndTS:    p.EndTS,
+		UserID:   p.UserID,
+		NodeUUID: domNodeUUID,
+		Search:   p.Search,
+		TopN:     20,
+	})
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
@@ -126,11 +150,31 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		return id
 	}
 
-	inbOut := make([]map[string]any, 0, len(inbStats))
 	var totalUp, totalDown int64
-	for _, row := range inbStats {
+	for _, row := range nodeStats {
 		totalUp += row.UpBytes
 		totalDown += row.DownBytes
+	}
+	totalBytes := totalUp + totalDown
+
+	nodeOut := make([]map[string]any, 0, len(nodeStats))
+	for _, row := range nodeStats {
+		share := 0.0
+		if totalBytes > 0 {
+			share = float64(row.Total) * 100 / float64(totalBytes)
+		}
+		nodeOut = append(nodeOut, map[string]any{
+			"node_uuid":   row.NodeUUID,
+			"node_name":   nodeNames[row.NodeUUID],
+			"up_bytes":    row.UpBytes,
+			"down_bytes":  row.DownBytes,
+			"total_bytes": row.Total,
+			"share_pct":   share,
+		})
+	}
+
+	inbOut := make([]map[string]any, 0, len(inbStats))
+	for _, row := range inbStats {
 		inbOut = append(inbOut, map[string]any{
 			"node_uuid":    row.NodeUUID,
 			"node_name":    nodeNames[row.NodeUUID],
@@ -141,6 +185,7 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 			"total_bytes":  row.Total,
 		})
 	}
+
 	usrOut := make([]map[string]any, 0, len(usrInbStats))
 	for _, row := range usrInbStats {
 		usrOut = append(usrOut, map[string]any{
@@ -155,26 +200,29 @@ func nodemgtStatsSummary(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 			"total_bytes":  row.Total,
 		})
 	}
-	domOut := make([]map[string]any, 0, len(domains))
-	for _, row := range domains {
-		domOut = append(domOut, map[string]any{
-			"node_uuid":    row.NodeUUID,
-			"node_name":    nodeNames[row.NodeUUID],
-			"inbound_id":   row.InboundID,
-			"inbound_name": resolveInboundName(row.InboundID),
-			"domain":       row.Domain,
-			"bytes":        row.Bytes,
-		})
-	}
+
+	_, tzOffsetSec := time.Now().In(time.Local).Zone()
 	return map[string]any{
-		"enabled":            st.StatsEnabled(),
-		"days":               p.Days,
-		"top_n":              15,
-		"total_up_bytes":     totalUp,
-		"total_down_bytes":   totalDown,
-		"total_bytes":        totalUp + totalDown,
-		"inbounds":           inbOut,
-		"user_inbounds":      usrOut,
-		"top_domains":        domOut,
+		"enabled":                st.StatsEnabled(),
+		"days":                   p.Days,
+		"start_day":              startDay,
+		"end_day":                endDay,
+		"top_n":                  20,
+		"retention_days":         7,
+		"updated_at":             time.Now().Unix(),
+		"tz_offset_sec":          tzOffsetSec,
+		"total_up_bytes":         totalUp,
+		"total_down_bytes":       totalDown,
+		"total_bytes":            totalBytes,
+		"active_node_count":      len(nodeOut),
+		"nodes":                  nodeOut,
+		"inbounds":               inbOut,
+		"user_inbounds":          usrOut,
+		"domain_window":          domRes.Window,
+		"domain_granularity_sec": domRes.GranularitySec,
+		"domain_start_ts":        domRes.StartTS,
+		"domain_end_ts":          domRes.EndTS,
+		"domain_buckets":         domRes.Buckets,
+		"top_domains":            domRes.Domains,
 	}, nil
 }

@@ -567,6 +567,12 @@ func (a *App) StartBackground() error {
 		return subhttp.Shutdown(ctx)
 	})
 
+	store.StartStatsWriter(context.Background(), dbcore.GetDBInstance())
+	a.addCleanup("nodemgt-stats-writer", func(context.Context) error {
+		store.StopStatsWriter()
+		return nil
+	})
+
 	dispatchStop := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(15 * time.Second)

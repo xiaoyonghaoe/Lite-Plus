@@ -61,3 +61,26 @@ func TestPresenceTTLForInterval(t *testing.T) {
 		t.Fatalf("TTL(30s) = %v, want 100s", got)
 	}
 }
+
+func TestComputeNextStatsInterval(t *testing.T) {
+	ResetAdminActivityForTest()
+	origNow := activityNowFn
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	activityNowFn = func() time.Time { return now }
+	t.Cleanup(func() {
+		activityNowFn = origNow
+		ResetAdminActivityForTest()
+	})
+
+	if got := ComputeNextStatsInterval(); got != 60*time.Second {
+		t.Fatalf("idle stats interval = %v, want 60s", got)
+	}
+	TouchAdminActivity()
+	if got := ComputeNextStatsInterval(); got != 15*time.Second {
+		t.Fatalf("active stats interval = %v, want 15s", got)
+	}
+	now = now.Add(61 * time.Second)
+	if got := ComputeNextStatsInterval(); got != 60*time.Second {
+		t.Fatalf("expired stats interval = %v, want 60s", got)
+	}
+}
