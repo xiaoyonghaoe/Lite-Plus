@@ -2244,7 +2244,7 @@ func (s *Store) GetSetting(key string) (string, error) {
 		}
 		return "", err
 	}
-	if key == "cf_api_token" {
+	if key == "cf_api_token" || key == "cf_kv_api_token" {
 		if strings.TrimSpace(row.Value) == "" {
 			return "", nil
 		}
@@ -2266,7 +2266,7 @@ func (s *Store) DeleteSetting(key string) error {
 }
 
 func (s *Store) SetSetting(key, value string) error {
-	if key == "cf_api_token" && value != "" {
+	if (key == "cf_api_token" || key == "cf_kv_api_token") && value != "" {
 		enc, err := secretcrypt.Seal(value)
 		if err != nil {
 			return err

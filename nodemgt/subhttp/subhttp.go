@@ -506,6 +506,7 @@ func ExpandedExtras(st *store.Store, userID, extraURLs string) []string {
 }
 
 func Start() error {
+	StartCFKVSyncLoop()
 	st := store.New(dbcore.GetDBInstance())
 	cfg, err := LoadConfig(st)
 	if err != nil {

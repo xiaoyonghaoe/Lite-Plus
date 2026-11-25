@@ -81,6 +81,7 @@ func init() {
 	reg("nodemgt.diag.status", nodemgtDiagStatus, "nodemgt diagnostics")
 	reg("nodemgt.settings.get", nodemgtSettingsGet, "Get nodemgt certificate issuer settings")
 	reg("nodemgt.settings.set", nodemgtSettingsSet, "Save nodemgt certificate issuer settings")
+	reg("nodemgt.sub.cfkv.sync", nodemgtSubCFKVSync, "Sync subscriptions to Cloudflare KV")
 	reg("nodemgt.node.list", nodemgtNodeList, "List node dial-stack profiles")
 	reg("nodemgt.node.upsert", nodemgtNodeUpsert, "Save a node's outbound IP stack")
 }
@@ -2260,21 +2261,48 @@ func nodemgtSettingsGet(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.J
 	}
 	httpsCert, httpsKey, httpsDomains := subhttp.PanelCertificate()
 	publishName, publishUserinfo := subhttp.MetadataPublishFlags(st)
+	cfKV := subhttp.LoadCFKVConfig(st)
+	cfKVState := subhttp.LoadCFKVSyncState(st)
 	return map[string]any{
-		"cf_api_token_set":       strings.TrimSpace(token) != "",
-		"acme_email":             email,
-		"sub_listen_port":        cfg.ListenPort,
-		"sub_public_port":        cfg.PublicPort,
-		"sub_path":               cfg.Path,
-		"sub_public_host":        cfg.PublicHost,
-		"sub_domain":             cfg.Domain,
-		"sub_reuse_https":        cfg.ReuseHTTPS,
-		"sub_publish_name":       publishName,
-		"sub_publish_userinfo":   publishUserinfo,
-		"https_certificate_path": httpsCert,
-		"https_private_key_path": httpsKey,
-		"https_domains":          httpsDomains,
+		"cf_api_token_set":           strings.TrimSpace(token) != "",
+		"acme_email":                 email,
+		"sub_listen_port":            cfg.ListenPort,
+		"sub_public_port":            cfg.PublicPort,
+		"sub_path":                   cfg.Path,
+		"sub_public_host":            cfg.PublicHost,
+		"sub_domain":                 cfg.Domain,
+		"sub_reuse_https":            cfg.ReuseHTTPS,
+		"sub_publish_name":           publishName,
+		"sub_publish_userinfo":       publishUserinfo,
+		"https_certificate_path":     httpsCert,
+		"https_private_key_path":     httpsKey,
+		"https_domains":              httpsDomains,
+		"cf_kv_enabled":              cfKV.Enabled,
+		"cf_kv_account_id":           cfKV.AccountID,
+		"cf_kv_namespace_id":         cfKV.NamespaceID,
+		"cf_kv_api_token_set":        strings.TrimSpace(cfKV.APIToken) != "",
+		"cf_kv_public_domain":        cfKV.PublicDomain,
+		"cf_kv_sub_prefix":           cfKV.SubPrefix,
+		"cf_kv_traffic_threshold_mb": cfKV.TrafficThresholdMB,
+		"cf_kv_max_stale_minutes":    cfKV.MaxStaleMinutes,
+		"cf_kv_delete_removed":       cfKV.DeleteRemoved,
+		"cf_kv_last_sync_at":         cfKVState.LastSyncAt,
+		"cf_kv_last_error":           cfKVState.LastError,
+		"cf_kv_last_result":          cfKVState.LastResult,
 	}, nil
+}
+
+type cfKVSettingsPatch struct {
+	CFKVEnabled            *bool   `json:"cf_kv_enabled"`
+	CFKVAccountID          *string `json:"cf_kv_account_id"`
+	CFKVNamespaceID        *string `json:"cf_kv_namespace_id"`
+	CFKVAPIToken           *string `json:"cf_kv_api_token"`
+	CFKVClearToken         *bool   `json:"cf_kv_clear_token"`
+	CFKVPublicDomain       *string `json:"cf_kv_public_domain"`
+	CFKVSubPrefix          *string `json:"cf_kv_sub_prefix"`
+	CFKVTrafficThresholdMB *int    `json:"cf_kv_traffic_threshold_mb"`
+	CFKVMaxStaleMinutes    *int    `json:"cf_kv_max_stale_minutes"`
+	CFKVDeleteRemoved      *bool   `json:"cf_kv_delete_removed"`
 }
 
 type nodemgtSettingsPatch struct {
@@ -2288,6 +2316,7 @@ type nodemgtSettingsPatch struct {
 	SubReuseHTTPS      *bool   `json:"sub_reuse_https"`
 	SubPublishName     *bool   `json:"sub_publish_name"`
 	SubPublishUserinfo *bool   `json:"sub_publish_userinfo"`
+	cfKVSettingsPatch
 }
 
 type nodemgtSettingsSnapshot struct {
@@ -2473,6 +2502,63 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 			return nil, nodemgtErr(err)
 		}
 	}
+	if p.CFKVEnabled != nil {
+		if err := st.SetSetting(subhttp.SettingCFKVEnabled, strconv.FormatBool(*p.CFKVEnabled)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.CFKVAccountID != nil {
+		if err := st.SetSetting(subhttp.SettingCFKVAccountID, strings.TrimSpace(*p.CFKVAccountID)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.CFKVNamespaceID != nil {
+		if err := st.SetSetting(subhttp.SettingCFKVNamespaceID, strings.TrimSpace(*p.CFKVNamespaceID)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.CFKVClearToken != nil && *p.CFKVClearToken {
+		if err := st.DeleteSetting(subhttp.SettingCFKVAPIToken); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	} else if p.CFKVAPIToken != nil && strings.TrimSpace(*p.CFKVAPIToken) != "" {
+		if err := st.SetSetting(subhttp.SettingCFKVAPIToken, strings.TrimSpace(*p.CFKVAPIToken)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.CFKVPublicDomain != nil {
+		if err := st.SetSetting(subhttp.SettingCFKVPublicDomain, subhttp.NormalizeCFPublicDomain(*p.CFKVPublicDomain)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.CFKVSubPrefix != nil {
+		if err := st.SetSetting(subhttp.SettingCFKVSubPrefix, subhttp.NormalizeCFSubPrefix(*p.CFKVSubPrefix)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.CFKVTrafficThresholdMB != nil {
+		v := *p.CFKVTrafficThresholdMB
+		if v < 0 {
+			v = 0
+		}
+		if err := st.SetSetting(subhttp.SettingCFKVTrafficThresholdMB, strconv.Itoa(v)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.CFKVMaxStaleMinutes != nil {
+		v := *p.CFKVMaxStaleMinutes
+		if v < 0 {
+			v = 0
+		}
+		if err := st.SetSetting(subhttp.SettingCFKVMaxStaleMinutes, strconv.Itoa(v)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.CFKVDeleteRemoved != nil {
+		if err := st.SetSetting(subhttp.SettingCFKVDeleteRemoved, strconv.FormatBool(*p.CFKVDeleteRemoved)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
 	subhttp.InvalidateCache()
 	changed := nodemgtSettingsChanged(p, prev)
 	if p.SubPublicHost != nil || p.SubReuseHTTPS != nil || restartSub {
@@ -2493,6 +2579,27 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		_ = nodemgtAudit(ctx, st, "nodemgt.settings.set", "nodemgt", strings.Join(changed, ","), map[string]string{"settings": strings.Join(changed, ",")})
 	}
 	return nodemgtSettingsGet(ctx, req)
+}
+
+func nodemgtSubCFKVSync(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
+	var p struct {
+		Force *bool `json:"force"`
+	}
+	_ = req.BindParams(&p)
+	force := true
+	if p.Force != nil {
+		force = *p.Force
+	}
+	st := nodemgtST()
+	res, err := subhttp.SyncCFKV(st, force)
+	if err != nil {
+		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
+	}
+	_ = nodemgtAudit(ctx, st, "nodemgt.sub.cfkv.sync", "nodemgt", fmt.Sprintf("pushed=%d skipped=%d deleted=%d", res.Pushed, res.Skipped, res.Deleted))
+	return res, nil
 }
 
 func nodemgtNodeList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
