@@ -2305,6 +2305,7 @@ func nodemgtSettingsGet(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.J
 		"cf_kv_last_error":           cfKVState.LastError,
 		"cf_kv_last_result":          cfKVState.LastResult,
 		"geo_rule_sources":           st.GeoRuleSources(),
+		"geo_rule_builtins":          store.BuiltinGeoRuleSources(),
 		"geo_rule_defaults":          store.DefaultGeoRuleSources(),
 	}, nil
 }
