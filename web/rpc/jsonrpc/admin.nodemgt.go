@@ -20,6 +20,7 @@ import (
 	"github.com/nuomiiiii/lite/nodemgt/inboundcfg"
 	"github.com/nuomiiiii/lite/nodemgt/models"
 	"github.com/nuomiiiii/lite/nodemgt/ops"
+	"github.com/nuomiiiii/lite/nodemgt/routetest"
 	"github.com/nuomiiiii/lite/nodemgt/secretcrypt"
 	"github.com/nuomiiiii/lite/nodemgt/store"
 	"github.com/nuomiiiii/lite/nodemgt/subhttp"
@@ -45,6 +46,7 @@ func init() {
 	reg("nodemgt.route.list", nodemgtRouteList, "List nodemgt routes")
 	reg("nodemgt.route.upsert", nodemgtRouteUpsert, "Create or update a nodemgt route")
 	reg("nodemgt.route.delete", nodemgtRouteDelete, "Delete a nodemgt route")
+	reg("nodemgt.route.test", nodemgtRouteTest, "Test which route matches a target domain or IP")
 	reg("nodemgt.chain.list", nodemgtChainList, "List nodemgt forward chains")
 	reg("nodemgt.chain.upsert", nodemgtChainUpsert, "Create or update a nodemgt forward chain")
 	reg("nodemgt.chain.delete", nodemgtChainDelete, "Delete a nodemgt forward chain")
@@ -2624,6 +2626,18 @@ func nodemgtSubCFKVSync(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
 	}
 	_ = nodemgtAudit(ctx, st, "nodemgt.sub.cfkv.sync", "nodemgt", fmt.Sprintf("pushed=%d skipped=%d deleted=%d", res.Pushed, res.Skipped, res.Deleted))
+	return res, nil
+}
+
+func nodemgtRouteTest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	var p routetest.Request
+	if err := req.BindParams(&p); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
+	res, err := routetest.Evaluate(ctx, nodemgtST(), p)
+	if err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
 	return res, nil
 }
 
