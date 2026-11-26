@@ -2304,6 +2304,8 @@ func nodemgtSettingsGet(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.J
 		"cf_kv_last_sync_at":         cfKVState.LastSyncAt,
 		"cf_kv_last_error":           cfKVState.LastError,
 		"cf_kv_last_result":          cfKVState.LastResult,
+		"geo_rule_sources":           st.GeoRuleSources(),
+		"geo_rule_defaults":          store.DefaultGeoRuleSources(),
 	}, nil
 }
 
@@ -2316,8 +2318,9 @@ type cfKVSettingsPatch struct {
 	CFKVPublicDomain       *string `json:"cf_kv_public_domain"`
 	CFKVSubPrefix          *string `json:"cf_kv_sub_prefix"`
 	CFKVTrafficThresholdMB *int    `json:"cf_kv_traffic_threshold_mb"`
-	CFKVMaxStaleMinutes    *int    `json:"cf_kv_max_stale_minutes"`
-	CFKVDeleteRemoved      *bool   `json:"cf_kv_delete_removed"`
+	CFKVMaxStaleMinutes    *int                   `json:"cf_kv_max_stale_minutes"`
+	CFKVDeleteRemoved      *bool                  `json:"cf_kv_delete_removed"`
+	GeoRuleSources         *[]store.GeoRuleSource `json:"geo_rule_sources"`
 }
 
 type nodemgtSettingsPatch struct {
@@ -2571,6 +2574,11 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	}
 	if p.CFKVDeleteRemoved != nil {
 		if err := st.SetSetting(subhttp.SettingCFKVDeleteRemoved, strconv.FormatBool(*p.CFKVDeleteRemoved)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.GeoRuleSources != nil {
+		if err := st.SetGeoRuleSources(*p.GeoRuleSources); err != nil {
 			return nil, nodemgtErr(err)
 		}
 	}

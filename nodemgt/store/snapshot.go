@@ -323,6 +323,7 @@ func (s *Store) NodeSnapshot(nodeUUID string) (map[string]any, error) {
 		"certs":           certs,
 		"dial_stack":      s.NodeDialStack(nodeUUID),
 		"stats_enabled":   s.StatsEnabled(),
+		"geo_sources":     s.EnabledGeoSourcesForSnapshot(),
 	}, nil
 }
 
