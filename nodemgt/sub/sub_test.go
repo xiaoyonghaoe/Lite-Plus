@@ -635,7 +635,7 @@ func TestAnyTLSRealityShare(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := DecodeShareLinks(raw)[0]
-	if !strings.HasPrefix(link, "anytls://") || !strings.Contains(link, "any-secret") || !strings.Contains(link, "security=reality") || !strings.Contains(link, "pbk=pk") || !strings.Contains(link, "sid=abcd") {
+	if !strings.HasPrefix(link, "anytls://") || !strings.Contains(link, "any-secret") || !strings.Contains(link, "security=reality") || !strings.Contains(link, "pbk=pk") || !strings.Contains(link, "sid=abcd") || !strings.Contains(link, "keepalive=30,30,0") {
 		t.Fatalf("anytls link: %s", link)
 	}
 	if strings.Contains(link, "type=") || strings.Contains(link, "encryption=") {

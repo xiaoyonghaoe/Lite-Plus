@@ -834,7 +834,14 @@ func RenderV2RayBase64(nodes []Node, extra []string) string {
 		if n.Mode != "" {
 			q.Set("mode", n.Mode)
 		}
-		u.RawQuery = q.Encode()
+		if scheme == "anytls" {
+			q.Set("keepalive", "30,30,0")
+		}
+		rawQuery := q.Encode()
+		if scheme == "anytls" {
+			rawQuery = strings.Replace(rawQuery, "keepalive=30%2C30%2C0", "keepalive=30,30,0", 1)
+		}
+		u.RawQuery = rawQuery
 		u.Fragment = n.Name
 		lines = append(lines, u.String())
 	}
