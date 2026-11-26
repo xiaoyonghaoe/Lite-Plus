@@ -327,6 +327,7 @@ type inboundUpsertParams struct {
 	FirewallAllowNodes []string                  `json:"firewall_allow_nodes"`
 	VirtualTags        []string                  `json:"virtual_tags"`
 	MaxConnsPerIP      *int                      `json:"max_conns_per_ip"`
+	AnyTLSKeepalive    *string                   `json:"anytls_keepalive"`
 	Grant              string                    `json:"grant"`
 	PageID             string                    `json:"page_id"`
 }
@@ -622,6 +623,16 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 		v := inboundcfg.DefaultMaxConnsPerIP
 		cfg.MaxConnsPerIP = &v
 	}
+	if p.AnyTLSKeepalive != nil {
+		v := strings.TrimSpace(*p.AnyTLSKeepalive)
+		cfg.AnyTLSKeepalive = &v
+	} else if existing != nil && oldCfg.AnyTLSKeepalive != nil {
+		v := strings.TrimSpace(*oldCfg.AnyTLSKeepalive)
+		cfg.AnyTLSKeepalive = &v
+	} else if strings.EqualFold(p.Protocol, "anytls") {
+		v := inboundcfg.DefaultAnyTLSKeepalive
+		cfg.AnyTLSKeepalive = &v
+	}
 	enabled := true
 	if p.Enabled != nil {
 		enabled = *p.Enabled
@@ -757,6 +768,7 @@ func inboundViewWithLinked(row models.Inbound, fwLinked bool) map[string]any {
 		"firewall_allow_nodes": s.FirewallAllowNodes,
 		"virtual_tags":         inboundcfg.NormalizeVirtualTags(s.VirtualTags),
 		"max_conns_per_ip":     inboundcfg.EffectiveMaxConnsPerIP(s),
+		"anytls_keepalive":     inboundcfg.EffectiveAnyTLSKeepalive(s),
 	}
 	if strings.EqualFold(row.Protocol, "shadowsocks") {
 		view["ss_network"] = inboundcfg.EffectiveSSNetwork(s)

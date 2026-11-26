@@ -40,6 +40,7 @@ type Node struct {
 	ALPN        string
 	Mode        string
 	Cipher      string
+	Keepalive   string
 }
 
 func ParseExtraURLs(raw string) []string {
@@ -281,6 +282,12 @@ func assembleWithAddrs(user models.NodeUser, inbounds []models.Inbound, creds []
 				ALPN:        cfg.ALPN,
 				Mode:        mode,
 				Cipher:      cipher,
+				Keepalive: func() string {
+					if strings.EqualFold(in.Protocol, "anytls") {
+						return inboundcfg.EffectiveAnyTLSKeepalive(cfg)
+					}
+					return ""
+				}(),
 			}
 		}
 		if allowBase {
@@ -834,12 +841,13 @@ func RenderV2RayBase64(nodes []Node, extra []string) string {
 		if n.Mode != "" {
 			q.Set("mode", n.Mode)
 		}
-		if scheme == "anytls" {
-			q.Set("keepalive", "30,30,0")
+		ka := strings.TrimSpace(n.Keepalive)
+		if scheme == "anytls" && ka != "" {
+			q.Set("keepalive", ka)
 		}
 		rawQuery := q.Encode()
-		if scheme == "anytls" {
-			rawQuery = strings.Replace(rawQuery, "keepalive=30%2C30%2C0", "keepalive=30,30,0", 1)
+		if scheme == "anytls" && ka != "" {
+			rawQuery = strings.Replace(rawQuery, "keepalive="+url.QueryEscape(ka), "keepalive="+ka, 1)
 		}
 		u.RawQuery = rawQuery
 		u.Fragment = n.Name

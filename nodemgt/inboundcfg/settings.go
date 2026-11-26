@@ -50,9 +50,20 @@ type Settings struct {
 	FirewallAllowNodes []string `json:"firewall_allow_nodes,omitempty"`
 	VirtualTags        []string `json:"virtual_tags,omitempty"`
 	MaxConnsPerIP      *int     `json:"max_conns_per_ip,omitempty"`
+	AnyTLSKeepalive    *string  `json:"anytls_keepalive,omitempty"`
 }
 
-const DefaultMaxConnsPerIP = 50
+const (
+	DefaultMaxConnsPerIP   = 50
+	DefaultAnyTLSKeepalive = "30,30,0"
+)
+
+func EffectiveAnyTLSKeepalive(s Settings) string {
+	if s.AnyTLSKeepalive == nil {
+		return DefaultAnyTLSKeepalive
+	}
+	return strings.TrimSpace(*s.AnyTLSKeepalive)
+}
 
 func EffectiveMaxConnsPerIP(s Settings) int {
 	if s.MaxConnsPerIP == nil {
